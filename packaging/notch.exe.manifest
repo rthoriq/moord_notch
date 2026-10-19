@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Ditanam ke notch.exe oleh build.rs. Elemen <msix> menghubungkan exe ini dengan paket
+  "NotchWindows" (lihat package/AppxManifest.xml). Selama paket itu belum dipasang,
+  notch berjalan biasa tanpa identitas paket; setelah dipasang, Windows memberi identitas
+  sehingga notifikasi pesan bisa dibaca.
+-->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="0.5.0.0" name="NotchWindows.Notch" type="win32" processorArchitecture="amd64"/>
+  <msix xmlns="urn:schemas-microsoft-com:msix.v1"
+        publisher="CN=NotchWindows Pribadi"
+        packageName="NotchWindows"
+        applicationId="Notch"/>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 dan 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>

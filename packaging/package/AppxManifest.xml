@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paket "sparse": isinya hanya manifest dan logo. notch.exe tetap di target\release
+  (external location) dan berjalan sebagai aplikasi desktop biasa, hanya saja dengan identitas
+  paket. Identitas itu syarat dari Windows untuk membaca notifikasi (WhatsApp, dll.).
+
+  Izin yang diminta:
+  - userNotificationListener: membaca notifikasi, tetap harus disetujui pengguna sekali.
+  - runFullTrust: berjalan seperti aplikasi desktop biasa (bukan sandbox UWP).
+  - unvirtualizedResources: pengaturan tetap di %APPDATA%\NotchWindows dan autostart tetap
+    di registry biasa, tidak dipindah ke folder paket.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap10 desktop6 rescap">
+
+  <Identity Name="NotchWindows" Publisher="CN=NotchWindows Pribadi" Version="0.5.0.0" ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Notch Windows</DisplayName>
+    <PublisherDisplayName>Pribadi</PublisherDisplayName>
+    <Logo>assets\StoreLogo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+    <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>
+    <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
+  </Properties>
+
+  <Resources>
+    <Resource Language="id-id" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+    <uap3:Capability Name="userNotificationListener" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="Notch" Executable="notch.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements
+        AppListEntry="none"
+        DisplayName="Notch Windows"
+        Description="Notch pribadi untuk Windows"
+        BackgroundColor="transparent"
+        Square150x150Logo="assets\Square150x150Logo.png"
+        Square44x44Logo="assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+</Package>
