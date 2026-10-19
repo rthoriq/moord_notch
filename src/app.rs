@@ -20,15 +20,15 @@ use windows::Win32::System::RemoteDesktop::{
 use windows::Win32::System::Threading::Sleep;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
-    VK_CAPITAL, VK_NUMLOCK,
+    GetKeyState, MOD_ALT, MOD_NOREPEAT, MOD_WIN, RegisterHotKey, ReleaseCapture, SetCapture, SetFocus,
+    TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, UnregisterHotKey, VK_CAPITAL, VK_NUMLOCK,
 };
 use windows::Win32::UI::Input::{
     GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RID_INPUT, RIDEV_INPUTSINK,
     RIDEV_REMOVE, RIM_TYPEKEYBOARD, RegisterRawInputDevices,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, WM_HOTKEY,
     GWL_EXSTYLE, GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowLongPtrW,
     HWND_TOPMOST, IDC_ARROW, IDC_HAND, IsWindow, KillTimer, LoadCursorW, MA_NOACTIVATE, MSG,
     PBT_APMRESUMEAUTOMATIC, PBT_POWERSETTINGCHANGE, PM_REMOVE, PeekMessageW, PostMessageW,
@@ -50,18 +50,24 @@ use crate::lyrics::{self, Lyrics};
 use crate::media::{self, Snapshot};
 use crate::power::{self, Power};
 use crate::privacy::Usage;
-use crate::render::{self, Button, CONTENTS, FocusView, Hit, Hud, MediaView, Renderer, Scene, View, WaterView};
+use crate::render::{
+    self, Button, CONTENTS, ControlsView, Eyes, FocusView, Hit, Hud, MediaView, Mood, Renderer, Scene, TimerView, View,
+    WaterView,
+};
 use crate::services::{self, Event, Services, Task};
-use crate::settings::{Messages, Settings};
+use crate::settings::{Messages, Settings, Size};
 use crate::sound::{self, Sound};
-use crate::messages;
+use crate::folders::{self, Watch};
+use crate::{messages, network};
 use crate::sysinfo::Stats;
-use crate::tray::{self, Command, MenuState, Tray};
+use crate::tray::{self, Command, MenuState, PageCommand, PageMenu, Tray};
 use crate::widgets::Page;
 use crate::widgets::focus::{self, Focus};
 use crate::widgets::shelf::{self, Shelf};
 use crate::widgets::tasks::{self, Tasks};
+use crate::widgets::timer::{self, Timer};
 use crate::widgets::water::{GOAL_ML, Water};
+use crate::weather::{self, City, Weather};
 use crate::{autostart, clock};
 
 const CLASS: PCWSTR = w!("NotchWindow");
@@ -84,6 +90,18 @@ const TIMER_POLL: usize = 8;
 const TIMER_FOCUS: usize = 9;
 /// Sesaat setelah Caps/Num Lock dilepas, saat status lampunya sudah berganti.
 const TIMER_LOCK_KEYS: usize = 10;
+/// Mata maskot melirik ke arah kursor.
+const TIMER_GAZE: usize = 11;
+/// Ekspresi sementara maskot (senang, kaget) selesai.
+const TIMER_MOOD: usize = 12;
+/// Timer cepat habis.
+const TIMER_ALARM: usize = 13;
+/// Perbarui cuaca.
+const TIMER_WEATHER: usize = 14;
+/// Mode senyap berakhir.
+const TIMER_QUIET: usize = 15;
+/// Id pintasan Win+Alt+N.
+const HOTKEY_ID: i32 = 1;
 
 const POLL_MS: u32 = 1_000;
 /// Jeda sebelum membuka, supaya tidak terbuka saat kursor hanya lewat menuju tab browser.
@@ -107,6 +125,26 @@ const PRIVACY_HUD_MS: u32 = 3_500;
 const BRIGHTNESS_HUD_MS: u32 = 1_600;
 const LOCK_KEY_HUD_MS: u32 = 1_400;
 const MESSAGE_HUD_MS: u32 = 5_000;
+const SCREENSHOT_HUD_MS: u32 = 4_000;
+const DOWNLOAD_HUD_MS: u32 = 4_500;
+const WIFI_HUD_MS: u32 = 3_000;
+/// Panel yang dibuka dengan pintasan menutup sendiri kalau kursor tidak datang.
+const HOTKEY_CLOSE_MS: u32 = 5_000;
+/// Seberapa sering posisi kursor dilihat selama mata maskot terlihat; lebih jarang kalau
+/// kursor sudah lama diam.
+const GAZE_MS: u32 = 200;
+const GAZE_IDLE_MS: u32 = 1_000;
+/// Kursor diam selama ini: mata kembali menatap ke depan.
+const GAZE_REST: Duration = Duration::from_secs(30);
+/// Lama ekspresi sementara setelah kabarnya hilang.
+const MOOD_MS: u32 = 5_000;
+const TIMER_HUD_MS: u32 = 8_000;
+const WEATHER_EVERY_MS: u32 = 30 * 60 * 1_000;
+/// Cuaca yang lebih tua dari ini tidak ditampilkan lagi.
+const WEATHER_STALE: Duration = Duration::from_secs(3 * 60 * 60);
+const QUIET: Duration = Duration::from_secs(60 * 60);
+/// Batas panjang nama kota yang diketik.
+const CITY_MAX: usize = 40;
 /// Gelombang di pil digambar ulang ~12 kali per detik: cukup hidup, nyaris tanpa beban CPU.
 const WAVE_MS: u32 = 80;
 const PROGRESS_MS: u32 = 1_000;
@@ -233,6 +271,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         return LRESULT(0);
     }
+    if msg == WM_RBUTTONUP
+        && let Some(menu) = with_app(|app| app.page_menu(lparam)).flatten()
+    {
+        let command = tray::show_page_menu(hwnd, &menu);
+        with_app(|app| app.after_page_menu(menu.page, command));
+        return LRESULT(0);
+    }
     match with_app(|app| app.handle(msg, wparam, lparam)).flatten() {
         Some(result) => result,
         None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
@@ -305,6 +350,39 @@ struct App {
     messages_available: bool,
     /// Pengguna menolak izin membaca notifikasi.
     messages_denied: bool,
+    /// Pintasan Win+Alt+N terdaftar.
+    hotkey: bool,
+    /// Arah lirikan mata saat ini dan yang dituju (lihat [`Eyes::look`]).
+    gaze: (f32, f32),
+    gaze_target: (f32, f32),
+    /// Posisi kursor terakhir dan kapan terakhir bergerak.
+    cursor: POINT,
+    cursor_moved: Instant,
+    /// Interval timer lirikan yang sedang aktif.
+    gaze_poll: Option<u32>,
+    /// Ekspresi sementara maskot dan kapan berakhir.
+    mood: Option<(Mood, Instant)>,
+    /// Menu klik kanan panel sedang terbuka; panel jangan ditutup dulu.
+    menu_open: bool,
+    /// Keadaan Wi-Fi terakhir; `None` sampai kabar pertama (keadaan awal tidak diumumkan).
+    network: Option<network::State>,
+    /// Pemantau folder Screenshots dan Downloads.
+    screenshots: Option<Watch>,
+    downloads: Option<Watch>,
+    timer: Timer,
+    /// Volume speaker (0..1, bisu) dan bisu mikrofon terakhir, untuk halaman kontrol.
+    volume: Option<(f32, bool)>,
+    mic: Option<bool>,
+    /// Slider yang sedang diseret.
+    slider_drag: Option<Hit>,
+    /// Mode senyap notch sampai waktu ini.
+    quiet_until: Option<Instant>,
+    city: Option<City>,
+    /// Nama kota yang sedang diketik.
+    city_draft: Option<String>,
+    /// Keterangan pencarian kota, misal "Mencari kota…".
+    city_status: Option<String>,
+    weather: Option<(Weather, Instant)>,
     /// Kunci hari ini ("2026-10-19"), untuk catatan minum dan reset harian.
     day: String,
     water_due: Instant,
@@ -332,7 +410,7 @@ impl App {
     fn new(hwnd: HWND) -> Result<Self> {
         let (monitor, monitor_rect) = primary_monitor();
         let settings = Settings::load();
-        let renderer = Renderer::new(monitor_dpi(monitor), settings.theme)?;
+        let renderer = Renderer::new(scaled_dpi(monitor_dpi(monitor), settings.size), settings.theme)?;
         let icon = render::make_icon(unsafe { GetSystemMetrics(SM_CXSMICON) })?;
         let seed = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(1);
         let drop = DropRegistration::register(hwnd)
@@ -388,6 +466,26 @@ impl App {
             raw_keyboard: false,
             messages_available: false,
             messages_denied: false,
+            hotkey: false,
+            gaze: (0.0, 0.0),
+            gaze_target: (0.0, 0.0),
+            cursor: POINT::default(),
+            cursor_moved: Instant::now(),
+            gaze_poll: None,
+            mood: None,
+            menu_open: false,
+            network: None,
+            screenshots: None,
+            downloads: None,
+            timer: Timer::default(),
+            volume: None,
+            mic: None,
+            slider_drag: None,
+            quiet_until: None,
+            city: City::load(),
+            city_draft: None,
+            city_status: None,
+            weather: None,
             day: clock::day_key(&clock::now()),
             water_due: Instant::now() + WATER_EVERY,
             press: None,
@@ -409,9 +507,14 @@ impl App {
         }
         app.set_raw_keyboard(app.settings.lock_keys);
         app.messages_available = messages::packaged();
+        debug_log!("identitas paket: {}", app.messages_available);
         if app.messages_available && app.settings.messages != Messages::Off {
             messages::request_access(app.services.notifier());
         }
+        app.set_hotkey(app.settings.hotkey);
+        app.update_watchers();
+        app.services.send(Task::WatchNetwork(app.settings.wifi));
+        app.fetch_weather();
         Ok(app)
     }
 
@@ -445,6 +548,7 @@ impl App {
             }
             WM_MOUSEACTIVATE => return Some(LRESULT(MA_NOACTIVATE as isize)),
             WM_TIMER => self.on_timer(wparam.0),
+            WM_HOTKEY => self.on_hotkey(),
             WM_INPUT => {
                 self.on_raw_input(lparam);
                 // Windows perlu membersihkan data input mentahnya sendiri.
@@ -469,6 +573,10 @@ impl App {
 
     fn on_mouse_move(&mut self, lparam: LPARAM) {
         self.on_hover();
+        if let Some(slider) = self.slider_drag {
+            self.apply_slider(slider, lparam);
+            return;
+        }
         // Ubin shelf yang ditekan lalu digeser cukup jauh mulai diseret keluar.
         if let Some((id, start)) = self.press {
             let (x, y) = point(lparam);
@@ -509,22 +617,63 @@ impl App {
         self.hovering = false;
         self.kill_timer(TIMER_OPEN);
         // Selama mengetik, panel tetap terbuka walau kursor pergi.
-        if self.expanded && self.tasks.draft.is_none() {
+        if self.expanded && !self.editing() {
             self.set_timer(TIMER_CLOSE, CLOSE_DELAY_MS);
         }
     }
 
     fn on_press(&mut self, lparam: LPARAM) {
-        if self.expanded
-            && let Some(Hit::ShelfItem(id)) = self.hit_at(lparam)
-        {
-            let (x, y) = point(lparam);
-            self.press = Some((id, POINT { x, y }));
-            unsafe { SetCapture(self.hwnd) };
+        if !self.expanded {
+            return;
+        }
+        match self.hit_at(lparam) {
+            Some(Hit::ShelfItem(id)) => {
+                let (x, y) = point(lparam);
+                self.press = Some((id, POINT { x, y }));
+                unsafe { SetCapture(self.hwnd) };
+            }
+            // Slider langsung mengikuti kursor, lalu bisa diseret.
+            Some(slider @ (Hit::VolumeSlider | Hit::BrightnessSlider)) => {
+                self.slider_drag = Some(slider);
+                unsafe { SetCapture(self.hwnd) };
+                self.apply_slider(slider, lparam);
+            }
+            _ => {}
+        }
+    }
+
+    /// Ubah volume/kecerahan sesuai posisi kursor di slider.
+    fn apply_slider(&mut self, slider: Hit, lparam: LPARAM) {
+        let x = point(lparam).0 as f32 / self.renderer.scale();
+        let Some(value) = self.renderer.slider_value(slider, x) else { return };
+        self.set_level(slider, value);
+    }
+
+    /// Volume (0..1) atau kecerahan; tampilan langsung berubah, perangkatnya menyusul.
+    fn set_level(&mut self, slider: Hit, value: f32) {
+        let value = value.clamp(0.0, 1.0);
+        match slider {
+            Hit::VolumeSlider => {
+                self.volume = Some((value, false));
+                self.services.send(Task::SetVolume(value));
+            }
+            Hit::BrightnessSlider if self.brightness.is_some() => {
+                let percent = (value * 100.0).round() as u8;
+                self.brightness = Some(percent as u32);
+                self.services.send(Task::SetBrightness(percent));
+            }
+            _ => return,
+        }
+        if !self.animating() {
+            self.redraw();
         }
     }
 
     fn on_click(&mut self, lparam: LPARAM) {
+        if self.slider_drag.take().is_some() {
+            let _ = unsafe { ReleaseCapture() };
+            return;
+        }
         // Klik biasa pada ubin shelf tidak melakukan apa-apa; buka dengan klik dua kali.
         if self.press.take().is_some() {
             let _ = unsafe { ReleaseCapture() };
@@ -532,26 +681,39 @@ impl App {
         }
         self.kill_timer(TIMER_OPEN);
         if !self.expanded {
-            // Mengklik kabar pesan membuka aplikasinya (tidak dari lock screen).
-            if self.hud_visible
-                && !self.locked
-                && let Some(Hud::Message { aumid, .. }) = &self.hud
-            {
-                dragdrop::open_app(self.hwnd, aumid);
-                self.hud_visible = false;
-                self.refresh();
-                return;
+            // Kabar pesan membuka aplikasinya, kabar unduhan menunjukkan file-nya di folder
+            // (tidak dari lock screen).
+            if self.hud_visible && !self.locked {
+                let opened = match &self.hud {
+                    Some(Hud::Message { aumid, app, browser, .. }) => {
+                        messages::open(self.hwnd, aumid, app, *browser);
+                        true
+                    }
+                    Some(Hud::Download { path, .. }) => {
+                        dragdrop::reveal(self.hwnd, path);
+                        true
+                    }
+                    _ => false,
+                };
+                if opened {
+                    self.hud_visible = false;
+                    self.refresh();
+                    return;
+                }
             }
             // Mengklik kabar singkat lain membuka halaman yang bersangkutan.
             if self.hud_visible
                 && let Some(hud) = &self.hud
             {
-                self.page = match hud {
+                let page = match hud {
                     Hud::Focus { .. } => Page::Focus,
                     Hud::Water { .. } => Page::Water,
                     Hud::Privacy { .. } => Page::System,
+                    Hud::Screenshot { .. } => Page::Shelf,
+                    Hud::Timer { .. } => Page::Timer,
                     _ => Page::Home,
                 };
+                self.page = if self.settings.pages.shown(page) { page } else { Page::Home };
                 self.page_anim = None;
             }
             if self.locked {
@@ -561,7 +723,7 @@ impl App {
             return;
         }
         let hit = self.hit_at(lparam);
-        if self.tasks.draft.is_some() && hit != Some(Hit::TaskInput) {
+        if self.editing() && hit != Some(Hit::TaskInput) && hit != Some(Hit::CityInput) {
             self.end_edit(true, true);
         }
         if let Some(hit) = hit {
@@ -573,12 +735,9 @@ impl App {
     fn on_hit(&mut self, hit: Hit) {
         let now = Instant::now();
         match hit {
-            Hit::PagePrev => self.go_page(self.page.step(-1), -1.0),
-            Hit::PageNext => self.go_page(self.page.step(1), 1.0),
-            Hit::PageDot(page) => {
-                let dir = if page.index() > self.page.index() { 1.0 } else { -1.0 };
-                self.go_page(page, dir);
-            }
+            Hit::PagePrev => self.go_page(self.settings.pages.step(self.page, -1), -1.0),
+            Hit::PageNext => self.go_page(self.settings.pages.step(self.page, 1), 1.0),
+            Hit::PageDot(page) => self.go_page(page, self.page_dir(page)),
             Hit::Media(button) => self.media_command(button),
             Hit::ShelfClear => {
                 self.shelf.clear();
@@ -603,9 +762,14 @@ impl App {
                 }
             }
             Hit::WaterDrink => {
+                let before = self.water.on(&self.day);
                 self.water.drink(&self.day);
                 self.water.save();
                 self.water_due = now + WATER_EVERY;
+                // Target hari ini tercapai: maskot ikut senang.
+                if before < GOAL_ML && self.water.on(&self.day) >= GOAL_ML {
+                    self.set_mood(Mood::Happy, 8_000);
+                }
             }
             Hit::WaterUndo => {
                 self.water.undo(&self.day);
@@ -619,12 +783,40 @@ impl App {
                 self.tasks.remove(index);
                 self.tasks.save();
             }
-            Hit::TaskInput => self.begin_edit(),
+            Hit::TaskInput => self.begin_edit(false),
             Hit::TasksClearDone => {
                 self.tasks.clear_done();
                 self.tasks.save();
             }
-            Hit::ShelfItem(_) | Hit::ShelfStrip | Hit::TaskList => {}
+            Hit::VolumeMute => self.services.send(Task::ToggleMute),
+            Hit::MicToggle => self.services.send(Task::ToggleMic),
+            Hit::QuietToggle => {
+                if self.quiet() {
+                    self.quiet_until = None;
+                    self.kill_timer(TIMER_QUIET);
+                } else {
+                    self.quiet_until = Some(now + QUIET);
+                    self.set_timer(TIMER_QUIET, QUIET.as_millis() as u32);
+                }
+            }
+            Hit::CityInput => self.begin_edit(true),
+            Hit::TimerPreset(minutes) => {
+                self.timer.start(minutes, now);
+                self.schedule_alarm();
+            }
+            Hit::TimerToggle => {
+                self.timer.toggle_pause(now);
+                self.schedule_alarm();
+            }
+            Hit::TimerAdd => {
+                self.timer.add_minute(now);
+                self.schedule_alarm();
+            }
+            Hit::TimerCancel => {
+                self.timer.cancel();
+                self.schedule_alarm();
+            }
+            Hit::ShelfItem(_) | Hit::ShelfStrip | Hit::TaskList | Hit::VolumeSlider | Hit::BrightnessSlider => {}
         }
     }
 
@@ -674,7 +866,17 @@ impl App {
             {
                 self.tasks.scroll_by(step)
             }
-            _ => self.go_page(self.page.step(step), step as f32),
+            // Roda di atas slider: naik/turun 2%.
+            Some(slider @ (Hit::VolumeSlider | Hit::BrightnessSlider)) if !horizontal => {
+                let current = match slider {
+                    Hit::VolumeSlider => self.volume.map(|(level, _)| level),
+                    _ => self.brightness.map(|b| b as f32 / 100.0),
+                };
+                if let Some(current) = current {
+                    self.set_level(slider, current - step as f32 * 0.02);
+                }
+            }
+            _ => self.go_page(self.settings.pages.step(self.page, step), step as f32),
         }
         self.hovered = None;
         self.refresh();
@@ -720,11 +922,14 @@ impl App {
     fn on_drag(&mut self, kind: usize) {
         match kind {
             DRAG_ENTER => {
+                // Shelf yang disembunyikan tidak menerima file.
+                if !self.settings.pages.shown(Page::Shelf) {
+                    return;
+                }
                 self.shelf.drop_hover = true;
                 self.kill_timer(TIMER_CLOSE);
                 if self.expanded {
-                    let dir = if Page::Shelf.index() > self.page.index() { 1.0 } else { -1.0 };
-                    self.go_page(Page::Shelf, dir);
+                    self.go_page(Page::Shelf, self.page_dir(Page::Shelf));
                 } else {
                     self.page = Page::Shelf;
                     self.page_anim = None;
@@ -739,7 +944,8 @@ impl App {
             }
             DRAG_DROP => {
                 self.shelf.drop_hover = false;
-                let added = self.shelf.add(dragdrop::take_dropped());
+                let dropped = dragdrop::take_dropped();
+                let added = if self.settings.pages.shown(Page::Shelf) { self.shelf.add(dropped) } else { Vec::new() };
                 if !added.is_empty() {
                     self.shelf.save();
                     self.services.thumbnails(added);
@@ -774,12 +980,23 @@ impl App {
         self.refresh();
     }
 
-    /// Mulai mengetik tugas baru. Notch sementara boleh menerima fokus keyboard.
-    fn begin_edit(&mut self) {
-        if self.tasks.draft.is_some() {
+    /// Sedang mengetik tugas atau nama kota.
+    fn editing(&self) -> bool {
+        self.tasks.draft.is_some() || self.city_draft.is_some()
+    }
+
+    /// Mulai mengetik tugas baru, atau nama kota cuaca (`city`). Notch sementara boleh
+    /// menerima fokus keyboard.
+    fn begin_edit(&mut self, city: bool) {
+        if self.editing() {
             return;
         }
-        self.tasks.draft = Some(String::new());
+        if city {
+            self.city_draft = Some(String::new());
+            self.city_status = None;
+        } else {
+            self.tasks.draft = Some(String::new());
+        }
         self.pending_surrogate = None;
         self.edit_return = Some(unsafe { GetForegroundWindow() });
         self.set_activatable(true);
@@ -792,10 +1009,23 @@ impl App {
     /// Selesai mengetik. `commit` menyimpan teksnya; `restore_focus` mengembalikan fokus ke
     /// aplikasi sebelumnya (tidak perlu kalau pengguna sendiri sudah pindah aplikasi).
     fn end_edit(&mut self, commit: bool, restore_focus: bool) {
-        let Some(draft) = self.tasks.draft.take() else { return };
-        if commit && self.tasks.add(&draft) {
+        let (task, city) = (self.tasks.draft.take(), self.city_draft.take());
+        if task.is_none() && city.is_none() {
+            return;
+        }
+        if commit
+            && let Some(task) = task
+            && self.tasks.add(&task)
+        {
             self.tasks.reveal(self.tasks.items.len() - 1);
             self.tasks.save();
+        }
+        if commit
+            && let Some(name) = city.map(|c| c.trim().to_string())
+            && !name.is_empty()
+        {
+            self.city_status = Some("Mencari kota…".to_string());
+            weather::find_city(name, self.services.notifier());
         }
         self.set_activatable(false);
         if let Some(previous) = self.edit_return.take()
@@ -819,15 +1049,17 @@ impl App {
     }
 
     fn on_char(&mut self, unit: u16) {
-        if self.tasks.draft.is_none() {
+        if !self.editing() {
             return;
         }
         match unit {
             0x08 => {
-                if let Some(draft) = &mut self.tasks.draft {
+                if let Some(draft) = self.tasks.draft.as_mut().or(self.city_draft.as_mut()) {
                     draft.pop();
                 }
             }
+            // Enter di kotak kota: cari kotanya.
+            0x0D if self.city_draft.is_some() => self.end_edit(true, true),
             0x0D => {
                 // Enter: simpan lalu siap mengetik tugas berikutnya; Enter di kotak kosong menutup.
                 let text = self.tasks.draft.replace(String::new()).unwrap_or_default();
@@ -858,10 +1090,13 @@ impl App {
     }
 
     fn type_text(&mut self, text: &str) {
-        if let Some(draft) = &mut self.tasks.draft {
-            let room = tasks::MAX_LEN.saturating_sub(draft.chars().count());
-            draft.extend(text.chars().filter(|c| !c.is_control()).take(room));
-        }
+        let (draft, max) = match (&mut self.tasks.draft, &mut self.city_draft) {
+            (Some(draft), _) => (draft, tasks::MAX_LEN),
+            (None, Some(draft)) => (draft, CITY_MAX),
+            (None, None) => return,
+        };
+        let room = max.saturating_sub(draft.chars().count());
+        draft.extend(text.chars().filter(|c| !c.is_control()).take(room));
     }
 
     fn hit_at(&self, lparam: LPARAM) -> Option<Hit> {
@@ -890,7 +1125,7 @@ impl App {
             }
             TIMER_CLOSE => {
                 self.kill_timer(TIMER_CLOSE);
-                if !self.hovering && self.tasks.draft.is_none() && !self.shelf.drop_hover {
+                if !self.hovering && !self.editing() && !self.shelf.drop_hover && !self.menu_open && self.slider_drag.is_none() {
                     self.set_expanded(false);
                 }
             }
@@ -913,11 +1148,37 @@ impl App {
             TIMER_FOCUS => {
                 if let Some(finished) = self.focus.finish_if_due(Instant::now()) {
                     self.alert(Hud::Focus { finished }, FOCUS_HUD_MS, Sound::FocusDone);
+                    if finished == focus::Phase::Focus {
+                        self.set_mood(Mood::Happy, FOCUS_HUD_MS + MOOD_MS);
+                    }
                 }
                 self.schedule_focus();
                 self.refresh();
             }
             TIMER_LOCK_KEYS => self.on_lock_keys(),
+            TIMER_GAZE => self.on_gaze(),
+            TIMER_ALARM => {
+                self.kill_timer(TIMER_ALARM);
+                if self.timer.finish_if_due(Instant::now()) {
+                    let minutes = self.timer.total_minutes();
+                    self.alert(Hud::Timer { minutes }, TIMER_HUD_MS, Sound::Alarm);
+                }
+                self.schedule_alarm();
+                self.refresh();
+            }
+            TIMER_WEATHER => self.fetch_weather(),
+            TIMER_QUIET => {
+                self.kill_timer(TIMER_QUIET);
+                self.quiet_until = None;
+                self.refresh();
+            }
+            TIMER_MOOD => {
+                self.kill_timer(TIMER_MOOD);
+                self.mood = None;
+                if !self.animating() {
+                    self.redraw();
+                }
+            }
             _ => {}
         }
     }
@@ -974,7 +1235,8 @@ impl App {
     /// Ingatkan minum kalau sudah waktunya, hanya di jam aktif dan selama target belum tercapai.
     fn check_water(&mut self) {
         let now = Instant::now();
-        if now < self.water_due {
+        // Halaman minum yang disembunyikan berarti pengingatnya tidak dipakai.
+        if now < self.water_due || !self.settings.pages.shown(Page::Water) {
             return;
         }
         let ml = self.water.on(&self.day);
@@ -1014,7 +1276,28 @@ impl App {
                 }
                 Event::Privacy(usage) => self.on_privacy(usage),
                 Event::System(stats) => self.system = Some(stats),
-                Event::Volume { level, muted } => self.show_hud(Hud::Volume { level, muted }, VOLUME_HUD_MS),
+                Event::Volume { level, muted, initial } => {
+                    self.volume = Some((level, muted));
+                    if !initial {
+                        self.show_hud(Hud::Volume { level, muted }, VOLUME_HUD_MS);
+                    }
+                }
+                Event::Mic(muted) => self.mic = muted,
+                Event::City(found) => match found {
+                    Some(city) => {
+                        city.save();
+                        self.city = Some(city);
+                        self.city_status = None;
+                        self.fetch_weather();
+                    }
+                    None => self.city_status = Some("Kota tidak ditemukan".to_string()),
+                },
+                Event::Weather(found) => {
+                    debug_log!("cuaca: {found:?}");
+                    if let Some(found) = found {
+                        self.weather = Some((found, Instant::now()));
+                    }
+                }
                 Event::Bluetooth(notice) => {
                     let sound = if notice.connected { Sound::Connect } else { Sound::Disconnect };
                     let hud = Hud::Bluetooth {
@@ -1027,10 +1310,13 @@ impl App {
                     self.alert(hud, BLUETOOTH_HUD_MS, sound);
                 }
                 Event::MessagesAccess(allowed) => {
+                    debug_log!("izin membaca notifikasi: {allowed}");
                     self.messages_denied = !allowed;
                     self.services.send(Task::WatchMessages(allowed && self.settings.messages != Messages::Off));
                 }
                 Event::Message(message) => self.on_message(message),
+                Event::Network(state) => self.on_network(state),
+                Event::Files { kind, paths } => self.on_files(kind, paths),
                 Event::BluetoothBattery { id, battery } => {
                     // Baterai yang telat terbaca hanya dipakai kalau kabarnya masih tampil.
                     if self.hud_visible
@@ -1069,6 +1355,7 @@ impl App {
         self.privacy_known = true;
         if let Some(hud) = hud {
             self.alert(hud, PRIVACY_HUD_MS, Sound::Privacy);
+            self.set_mood(Mood::Surprised, PRIVACY_HUD_MS + MOOD_MS);
         }
     }
 
@@ -1077,30 +1364,225 @@ impl App {
     fn on_message(&mut self, message: messages::Message) {
         let wanted = match self.settings.messages {
             Messages::Off => false,
+            // Dari browser (misal WhatsApp Web) hanya kalau "Notifikasi browser" menyala.
+            _ if message.from_browser => self.settings.browser_messages,
             Messages::WhatsApp => message.is_whatsapp(),
             Messages::AllChat => true,
         };
+        debug_log!("pesan dari {} (browser: {}), ditampilkan: {wanted}", message.app, message.from_browser);
         if !wanted {
             return;
         }
         if let Some(logo) = &message.logo {
             self.renderer.set_logo(&message.aumid, messages::LOGO_PX, logo);
         }
-        let messages::Message { app, aumid, sender, text, .. } = message;
-        // Di lock screen siapa pun bisa melihat layar, jadi pengirimnya pun tidak ditampilkan.
-        let (app, sender) = if self.locked { (String::new(), app) } else { (app, sender) };
-        let text = if self.settings.hide_content || self.locked || text.is_empty() { "Pesan baru".to_string() } else { text };
-        let hud = Hud::Message { app, aumid, sender, text };
-        self.alert(hud, MESSAGE_HUD_MS, Sound::Message);
+        let messages::Message { app, aumid, sender, text, from_browser, .. } = message;
+        // Di lock screen, atau saat rapat (kamera/mikrofon dipakai, mungkin sambil berbagi
+        // layar), orang lain bisa ikut melihat: pengirim dan isinya tidak ditampilkan.
+        let private = self.locked || self.in_meeting();
+        let (app, sender) = if private { (String::new(), app) } else { (app, sender) };
+        let text = if self.settings.hide_content || private || text.is_empty() { "Pesan baru".to_string() } else { text };
+        let hud = Hud::Message { app, aumid, sender, text, browser: from_browser };
+        // Tanpa bunyi dari notch: WhatsApp/browser sudah berbunyi sendiri.
+        self.show_hud(hud, MESSAGE_HUD_MS);
     }
 
     /// Kabar singkat yang disertai bunyi (kalau suara notifikasi aktif). Bunyi tetap diputar
     /// walau panel sedang terbuka, karena kabarnya penting.
     fn alert(&mut self, hud: Hud, ms: u32, sound: Sound) {
-        if self.settings.sound {
+        // Saat rapat notch tidak berbunyi (bisa terdengar peserta lain), kecuali kabar bahwa
+        // kamera/mikrofon baru saja dinyalakan. Saat senyap hanya kabar penting yang berbunyi.
+        let meeting = self.in_meeting() && sound != Sound::Privacy;
+        let quiet = self.quiet() && !urgent(&hud);
+        if self.settings.sound && !meeting && !quiet {
             sound::play(sound);
         }
         self.show_hud(hud, ms);
+    }
+
+    /// Mode rapat aktif: kamera atau mikrofon sedang dipakai.
+    fn in_meeting(&self) -> bool {
+        self.settings.meeting && self.privacy.active()
+    }
+
+    fn quiet(&self) -> bool {
+        self.quiet_until.is_some_and(|until| Instant::now() < until)
+    }
+
+    /// Jadwalkan kabar timer habis.
+    fn schedule_alarm(&self) {
+        if self.timer.running() {
+            let left = self.timer.remaining(Instant::now()).as_millis().min(u32::MAX as u128) as u32;
+            self.set_timer(TIMER_ALARM, left.saturating_add(20));
+        } else {
+            self.kill_timer(TIMER_ALARM);
+        }
+    }
+
+    /// Ambil cuaca kota yang diatur, lalu jadwalkan pembaruan berikutnya.
+    fn fetch_weather(&mut self) {
+        match (&self.city, self.settings.weather) {
+            (Some(city), true) => {
+                weather::fetch(city, self.services.notifier());
+                self.set_timer(TIMER_WEATHER, WEATHER_EVERY_MS);
+            }
+            _ => self.kill_timer(TIMER_WEATHER),
+        }
+    }
+
+    /// Wi-Fi tersambung, terputus, atau kehilangan internet. Kabar pertama hanyalah keadaan awal.
+    fn on_network(&mut self, state: network::State) {
+        debug_log!("jaringan: {state:?}");
+        let Some(before) = self.network.replace(state.clone()) else { return };
+        if !self.settings.wifi {
+            return;
+        }
+        let change = match (&before.wifi, &state.wifi) {
+            (_, Some(name)) if before.wifi.as_ref() != Some(name) => {
+                Some((Hud::Wifi { name: name.clone(), connected: true, internet: true }, Some(Sound::Connect)))
+            }
+            (Some(name), None) => Some((Hud::Wifi { name: name.clone(), connected: false, internet: false }, Some(Sound::Disconnect))),
+            (Some(_), Some(name)) if before.internet && !state.internet => {
+                Some((Hud::Wifi { name: name.clone(), connected: true, internet: false }, None))
+            }
+            _ => None,
+        };
+        match change {
+            Some((hud, Some(sound))) => self.alert(hud, WIFI_HUD_MS, sound),
+            Some((hud, None)) => self.show_hud(hud, WIFI_HUD_MS),
+            None => {}
+        }
+    }
+
+    /// File baru yang selesai ditulis: screenshot masuk shelf, unduhan dikabarkan.
+    fn on_files(&mut self, kind: folders::Kind, paths: Vec<std::path::PathBuf>) {
+        let name = |path: &std::path::Path| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        match kind {
+            folders::Kind::Screenshot => {
+                if !self.settings.screenshots || !self.settings.pages.shown(Page::Shelf) {
+                    return;
+                }
+                let added = self.shelf.add(paths);
+                let Some((id, path)) = added.last().cloned() else { return };
+                self.shelf.save();
+                let more = added.len() - 1;
+                self.services.thumbnails(added);
+                self.show_hud(Hud::Screenshot { id, name: name(&path), more }, SCREENSHOT_HUD_MS);
+            }
+            folders::Kind::Downloads => {
+                let Some(path) = paths.first().cloned() else { return };
+                if self.settings.downloads {
+                    let hud = Hud::Download { name: name(&path), path, more: paths.len() - 1 };
+                    self.alert(hud, DOWNLOAD_HUD_MS, Sound::Download);
+                }
+            }
+        }
+    }
+
+    /// Nyalakan/matikan pemantau folder sesuai pengaturan.
+    fn update_watchers(&mut self) {
+        let shots = self.settings.screenshots && self.settings.pages.shown(Page::Shelf);
+        if shots != self.screenshots.is_some() {
+            self.screenshots = shots.then(|| Watch::start(folders::Kind::Screenshot, self.services.notifier())).flatten();
+        }
+        if self.settings.downloads != self.downloads.is_some() {
+            self.downloads =
+                self.settings.downloads.then(|| Watch::start(folders::Kind::Downloads, self.services.notifier())).flatten();
+        }
+    }
+
+    /// Daftarkan atau lepas pintasan Win+Alt+N.
+    fn set_hotkey(&mut self, on: bool) {
+        if on == self.hotkey {
+            return;
+        }
+        if on {
+            let modifiers = MOD_WIN | MOD_ALT | MOD_NOREPEAT;
+            match unsafe { RegisterHotKey(Some(self.hwnd), HOTKEY_ID, modifiers, u32::from(b'N')) } {
+                Ok(()) => self.hotkey = true,
+                Err(e) => debug_log!("pintasan Win+Alt+N tidak bisa dipakai: {e}"),
+            }
+        } else {
+            let _ = unsafe { UnregisterHotKey(Some(self.hwnd), HOTKEY_ID) };
+            self.hotkey = false;
+        }
+    }
+
+    /// Win+Alt+N: buka panel, atau tutup kalau sedang terbuka.
+    fn on_hotkey(&mut self) {
+        if !self.shown {
+            return;
+        }
+        if self.expanded {
+            self.set_expanded(false);
+            return;
+        }
+        self.kill_timer(TIMER_OPEN);
+        self.set_expanded(true);
+        if !self.hovering {
+            self.set_timer(TIMER_CLOSE, HOTKEY_CLOSE_MS);
+        }
+    }
+
+    /// Arah geser menuju `page`: maju kalau letaknya di kanan halaman sekarang.
+    fn page_dir(&self, page: Page) -> f32 {
+        let pages = &self.settings.pages;
+        if pages.index(page) > pages.index(self.page) { 1.0 } else { -1.0 }
+    }
+
+    /// Klik kanan di panel (selain di ubin shelf): siapkan menu pengaturan halaman.
+    fn page_menu(&mut self, lparam: LPARAM) -> Option<PageMenu> {
+        let on_tile = matches!(self.hit_at(lparam), Some(Hit::ShelfItem(_) | Hit::ShelfRemove(_)));
+        if !self.expanded || self.locked || on_tile {
+            return None;
+        }
+        self.end_edit(true, false);
+        self.menu_open = true;
+        self.kill_timer(TIMER_CLOSE);
+        let pages = self.settings.pages;
+        Some(PageMenu {
+            page: self.page,
+            can_left: pages.can_move(self.page, -1),
+            can_right: pages.can_move(self.page, 1),
+            hidden: pages.order().into_iter().filter(|p| !pages.shown(*p)).collect(),
+        })
+    }
+
+    fn after_page_menu(&mut self, page: Page, command: Option<PageCommand>) {
+        self.menu_open = false;
+        match command {
+            Some(PageCommand::Move(delta)) => self.settings.pages.move_by(page, delta),
+            Some(PageCommand::Hide) => {
+                let next = self.settings.pages.step(page, 1);
+                self.settings.pages.set_shown(page, false);
+                self.page = next;
+                self.page_anim = None;
+            }
+            Some(PageCommand::Show(shown)) => {
+                self.settings.pages.set_shown(shown, true);
+                self.go_page(shown, self.page_dir(shown));
+            }
+            None => {}
+        }
+        if command.is_some() {
+            self.settings.save();
+            self.update_watchers();
+        }
+        self.hovered = None;
+        // Selama menu terbuka kursor dianggap keluar dari notch.
+        if !self.cursor_over_window() {
+            self.set_timer(TIMER_CLOSE, CLOSE_DELAY_MS);
+        }
+        self.refresh();
+    }
+
+    fn cursor_over_window(&self) -> bool {
+        let mut cursor = POINT::default();
+        if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+            return false;
+        }
+        let (pos, size) = (self.window_pos(), self.renderer.size());
+        (pos.x..pos.x + size.cx).contains(&cursor.x) && (pos.y..pos.y + size.cy).contains(&cursor.y)
     }
 
     /// Kunci / buka kunci laptop. Notch tetap tampil di lock screen, tapi hanya jam dan musik.
@@ -1268,6 +1750,7 @@ impl App {
                 if crossed && self.plugged == Some(false) {
                     let hud = Hud::Power { plugged: false, percent: Some(percent), low: true };
                     self.alert(hud, POWER_HUD_MS + 1_000, Sound::LowBattery);
+                    self.set_mood(Mood::Surprised, POWER_HUD_MS + 1_000 + MOOD_MS);
                 }
             }
             power::Change::Brightness(level) => {
@@ -1283,7 +1766,8 @@ impl App {
 
     /// Tampilkan kabar singkat. Diabaikan saat panel sedang dibuka atau notch tersembunyi.
     fn show_hud(&mut self, hud: Hud, ms: u32) {
-        if !self.shown || self.expanded {
+        // Saat senyap hanya baterai lemah dan timer habis yang tetap muncul.
+        if !self.shown || self.expanded || (self.quiet() && !urgent(&hud)) {
             return;
         }
         self.hud = Some(hud);
@@ -1379,11 +1863,16 @@ impl App {
     fn update_ambient(&mut self) {
         let playing = self.playing();
         let focusing = self.focus.running();
+        let timing = self.timer.running();
+        let last_minute = self.timer.remaining(Instant::now()) < Duration::from_secs(60);
         let lyric = self.lyric_line().is_some();
         let interval = match self.view {
             _ if !self.shown => None,
             View::Pill | View::LyricPill if playing => Some(WAVE_MS),
+            // Di menit terakhir pil menghitung detik.
+            View::Pill if timing => Some(if last_minute { PROGRESS_MS } else { PILL_FOCUS_MS }),
             View::Pill if focusing => Some(PILL_FOCUS_MS),
+            View::Panel if self.page == Page::Timer && timing => Some(FOCUS_TICK_MS),
             View::Panel if self.page == Page::Home && playing => Some(if lyric { LYRIC_MS } else { PROGRESS_MS }),
             View::Panel if self.page == Page::Focus && focusing => Some(FOCUS_TICK_MS),
             _ => None,
@@ -1395,16 +1884,90 @@ impl App {
                 None => self.kill_timer(TIMER_AMBIENT),
             }
         }
+        self.update_gaze_poll();
+    }
+
+    /// Mata maskot sedang terlihat: di pil saat tidak ada musik/pomodoro, atau di halaman jam.
+    fn eyes_visible(&self) -> bool {
+        self.shown
+            && match self.view {
+                View::Pill => !self.playing() && !self.focus.running() && !self.timer.running(),
+                View::Panel => self.page == Page::Home && self.media.is_none() && self.page_anim.is_none(),
+                _ => false,
+            }
+    }
+
+    /// Lihat posisi kursor hanya selama matanya terlihat.
+    fn update_gaze_poll(&mut self) {
+        let visible = self.eyes_visible();
+        let interval = visible.then(|| if self.cursor_moved.elapsed() >= GAZE_REST { GAZE_IDLE_MS } else { GAZE_MS });
+        if interval != self.gaze_poll {
+            self.gaze_poll = interval;
+            match interval {
+                Some(ms) => self.set_timer(TIMER_GAZE, ms),
+                None => self.kill_timer(TIMER_GAZE),
+            }
+        }
+        // Mata yang tersembunyi kembali ke tengah, supaya tidak muncul sambil melirik.
+        if !visible {
+            self.gaze = (0.0, 0.0);
+            self.gaze_target = (0.0, 0.0);
+        }
+    }
+
+    /// Mata melirik ke arah kursor; kalau kursor lama diam, kembali menatap ke depan.
+    fn on_gaze(&mut self) {
+        let mut cursor = POINT::default();
+        if !self.eyes_visible() || unsafe { GetCursorPos(&mut cursor) }.is_err() {
+            self.update_gaze_poll();
+            return;
+        }
+        let now = Instant::now();
+        if cursor != self.cursor {
+            self.cursor = cursor;
+            self.cursor_moved = now;
+        }
+        let target = if now.duration_since(self.cursor_moved) >= GAZE_REST {
+            (0.0, 0.0)
+        } else {
+            let (pos, size, scale) = (self.window_pos(), self.renderer.size(), self.renderer.scale());
+            // Letak mata dalam DIP dari tengah atas kanvas: kiri pil, atau kanan halaman jam.
+            let (ex, ey) = if self.view == View::Panel { (148.0, 76.0) } else { (-70.0, 15.0) };
+            let eye_x = pos.x as f32 + size.cx as f32 / 2.0 + ex * scale;
+            let eye_y = pos.y as f32 + ey * scale;
+            // Lirikan penuh saat kursor sekitar sepertiga layar jauhnya.
+            let reach = ((self.monitor_rect.right - self.monitor_rect.left) as f32 / 3.0).max(1.0);
+            (((cursor.x as f32 - eye_x) / reach).clamp(-1.0, 1.0), ((cursor.y as f32 - eye_y) / (reach * 0.6)).clamp(-1.0, 1.0))
+        };
+        let moved = (target.0 - self.gaze_target.0).abs().max((target.1 - self.gaze_target.1).abs());
+        if moved > 0.05 {
+            self.start_motion();
+            self.gaze_target = target;
+        }
+        self.update_gaze_poll();
+    }
+
+    /// Ekspresi maskot: sementara (senang/kaget), mengantuk di malam hari, atau biasa.
+    fn mood(&self) -> Mood {
+        match self.mood {
+            Some((mood, until)) if Instant::now() < until => mood,
+            _ if night(clock::now().wHour) => Mood::Sleepy,
+            _ => Mood::Normal,
+        }
+    }
+
+    fn set_mood(&mut self, mood: Mood, ms: u32) {
+        self.mood = Some((mood, Instant::now() + Duration::from_millis(ms as u64)));
+        self.set_timer(TIMER_MOOD, ms + 20);
+    }
+
+    fn eyes(&self) -> Eyes {
+        Eyes { open: self.eyes_open(), look: self.gaze, mood: self.mood() }
     }
 
     fn start_blink(&mut self) {
-        let playing = self.media.as_ref().is_some_and(|m| m.playing);
-        let eyes_visible = match self.view {
-            View::Pill => !playing && !self.focus.running(),
-            View::Panel => self.page == Page::Home && self.media.is_none(),
-            _ => false,
-        };
-        if self.shown && eyes_visible {
+        // Mata yang sedang tersenyum ("^ ^") tidak berkedip.
+        if self.eyes_visible() && self.mood() != Mood::Happy {
             self.start_motion();
             self.blink_since = Some(self.now());
         }
@@ -1464,7 +2027,8 @@ impl App {
             self.blink_since = None;
             self.page_anim = None;
             self.ambient = None;
-            for timer in [TIMER_OPEN, TIMER_CLOSE, TIMER_BLINK, TIMER_HUD, TIMER_AMBIENT] {
+            self.gaze_poll = None;
+            for timer in [TIMER_OPEN, TIMER_CLOSE, TIMER_BLINK, TIMER_HUD, TIMER_AMBIENT, TIMER_GAZE] {
                 self.kill_timer(timer);
             }
         }
@@ -1475,7 +2039,7 @@ impl App {
         let (monitor, rect) = primary_monitor();
         self.monitor = monitor;
         self.monitor_rect = rect;
-        if let Err(e) = self.renderer.set_dpi(monitor_dpi(monitor)) {
+        if let Err(e) = self.renderer.set_dpi(scaled_dpi(monitor_dpi(monitor), self.settings.size)) {
             debug_log!("gagal mengganti DPI: {e}");
         }
         self.redraw();
@@ -1508,7 +2072,8 @@ impl App {
                 || self.height.is_moving()
                 || self.alpha != self.alpha_goals()
                 || self.blink_since.is_some()
-                || self.page_anim.is_some())
+                || self.page_anim.is_some()
+                || self.gaze != self.gaze_target)
     }
 
     /// Panggil sebelum mengubah target animasi, supaya frame pertama tidak melompat.
@@ -1520,15 +2085,16 @@ impl App {
 
     fn tick(&mut self) {
         FRAMES.fetch_add(1, Ordering::Relaxed);
-        // Pil yang diam dan hanya sedang berkedip cukup digambar ulang di sekitar matanya.
-        let blink_only = self.view == View::Pill
+        // Pil yang diam dan hanya sedang berkedip/melirik cukup digambar ulang di sekitar matanya.
+        let eyes_only = self.view == View::Pill
             && self.alpha[0] == 1.0
             && !self.width.is_moving()
             && !self.height.is_moving()
             && self.alpha == self.alpha_goals()
             && self.page_anim.is_none()
             && !self.playing()
-            && !self.focus.running();
+            && !self.focus.running()
+            && !self.timer.running();
         let now = self.now();
         let dt = (now - self.last_frame) as f32;
         self.last_frame = now;
@@ -1548,10 +2114,18 @@ impl App {
         if self.page_anim.is_some_and(|(_, start, _)| now - start >= PAGE_ANIM_SECS) {
             self.page_anim = None;
         }
-        if blink_only && self.shown {
+        if self.gaze != self.gaze_target {
+            let k = 1.0 - (-dt / 0.09).exp();
+            let (tx, ty) = self.gaze_target;
+            self.gaze = (self.gaze.0 + (tx - self.gaze.0) * k, self.gaze.1 + (ty - self.gaze.1) * k);
+            if (tx - self.gaze.0).abs() < 0.01 && (ty - self.gaze.1).abs() < 0.01 {
+                self.gaze = self.gaze_target;
+            }
+        }
+        if eyes_only && self.shown {
             let result = self
                 .renderer
-                .draw_eyes(self.eyes_open())
+                .draw_eyes(self.eyes())
                 .and_then(|dirty| self.renderer.present(self.hwnd, self.window_pos(), Some(&dirty)));
             if let Err(e) = result {
                 debug_log!("gagal menggambar mata: {e}");
@@ -1570,6 +2144,9 @@ impl App {
         let media = self.media.as_ref().map(media_view);
         let focus = self.focus_view();
         let water = self.water_view();
+        let timer = self.timer_view();
+        let controls = self.controls_view();
+        let weather = self.weather_text();
         let lyric = self.lyric_line();
         let uptime = clock::uptime();
         let now = self.now();
@@ -1577,7 +2154,7 @@ impl App {
             width: self.width.value,
             height: self.height.value,
             alpha: self.alpha,
-            eyes_open: self.eyes_open(),
+            eyes: self.eyes(),
             time: &time,
             date: &date,
             greeting: clock::greeting(&t),
@@ -1585,6 +2162,7 @@ impl App {
             lyric: lyric.as_ref().map(|(_, text)| text.as_str()),
             hud: self.hud.as_ref(),
             page: self.page,
+            pages: self.settings.pages,
             page_from: self
                 .page_anim
                 .map(|(from, start, dir)| (from, ((now - start) / PAGE_ANIM_SECS).clamp(0.0, 1.0) as f32, dir)),
@@ -1598,6 +2176,10 @@ impl App {
             hovered: self.hovered,
             seconds: now,
             locked: self.locked,
+            timer: &timer,
+            controls: &controls,
+            weather: weather.as_deref(),
+            city_draft: self.city_draft.as_deref(),
         };
         let result = self.renderer.draw(&scene).and_then(|_| self.renderer.present(self.hwnd, self.window_pos(), None));
         if let Err(e) = result {
@@ -1605,6 +2187,48 @@ impl App {
         }
         self.last_full = now;
         self.lyric_shown = lyric.and_then(|(index, _)| index);
+    }
+
+    fn timer_view(&self) -> TimerView {
+        let now = Instant::now();
+        let left = self.timer.remaining(now);
+        TimerView {
+            running: self.timer.running(),
+            active: self.timer.active(),
+            clock: focus::clock(left),
+            short: timer::short(left),
+            progress: self.timer.progress(now),
+            total_minutes: self.timer.total_minutes(),
+        }
+    }
+
+    fn controls_view(&self) -> ControlsView {
+        let quiet = self.quiet_until.filter(|_| self.quiet());
+        // Tombol kota sekaligus menunjukkan suhu, karena halaman jam tertutup pemutar musik.
+        let fresh = self.weather.as_ref().filter(|(_, at)| at.elapsed() < WEATHER_STALE);
+        let city = self.settings.weather.then(|| {
+            self.city_status.clone().unwrap_or_else(|| match (&self.city, fresh) {
+                (Some(city), Some((weather, _))) => format!("{} · {:.0}°", city.name, weather.temp),
+                (Some(city), None) => format!("Kota: {}", city.name),
+                (None, _) => "Atur kota cuaca".to_string(),
+            })
+        });
+        ControlsView {
+            volume: self.volume,
+            brightness: self.brightness,
+            mic: self.mic,
+            quiet_minutes: quiet.map(|until| until.saturating_duration_since(Instant::now()).as_secs().div_ceil(60) as u32),
+            city,
+        }
+    }
+
+    /// "28° Mendung · Jakarta", selama cuaca aktif dan datanya belum basi.
+    fn weather_text(&self) -> Option<String> {
+        let (weather, _) = self.weather.as_ref().filter(|(_, at)| at.elapsed() < WEATHER_STALE)?;
+        let city = self.city.as_ref().filter(|_| self.settings.weather)?;
+        let desc = weather::describe(weather.code);
+        let sky = if desc.is_empty() { String::new() } else { format!(" {desc}") };
+        Some(format!("{:.0}°{sky} · {}", weather.temp, city.name))
     }
 
     fn focus_view(&self) -> FocusView {
@@ -1655,6 +2279,7 @@ impl App {
             settings: self.settings,
             messages_available: self.messages_available,
             messages_denied: self.messages_denied,
+            hotkey_taken: self.settings.hotkey && !self.hotkey,
         }
     }
 
@@ -1708,6 +2333,66 @@ impl App {
                     messages::request_access(self.services.notifier());
                 }
             }
+            Command::ToggleHotkey => {
+                self.settings.hotkey = !self.settings.hotkey;
+                self.settings.save();
+                self.set_hotkey(self.settings.hotkey);
+            }
+            Command::ToggleWifi => {
+                self.settings.wifi = !self.settings.wifi;
+                self.settings.save();
+                self.network = None;
+                self.services.send(Task::WatchNetwork(self.settings.wifi));
+            }
+            Command::ToggleDownloads => {
+                self.settings.downloads = !self.settings.downloads;
+                self.settings.save();
+                self.update_watchers();
+            }
+            Command::ToggleMeeting => {
+                self.settings.meeting = !self.settings.meeting;
+                self.settings.save();
+            }
+            Command::ToggleWeather => {
+                self.settings.weather = !self.settings.weather;
+                self.settings.save();
+                if !self.settings.weather {
+                    self.weather = None;
+                } else if self.city.is_none() {
+                    // Belum ada kota: buka halaman kontrol dan langsung minta nama kotanya.
+                    self.page = Page::Controls;
+                    self.page_anim = None;
+                    self.set_expanded(true);
+                    self.begin_edit(true);
+                }
+                self.fetch_weather();
+                self.refresh();
+            }
+            Command::ToggleBrowserMessages => {
+                self.settings.browser_messages = !self.settings.browser_messages;
+                self.settings.save();
+            }
+            Command::ToggleScreenshots => {
+                self.settings.screenshots = !self.settings.screenshots;
+                self.settings.save();
+                self.update_watchers();
+            }
+            Command::TogglePage(page) => {
+                let shown = !self.settings.pages.shown(page);
+                self.settings.pages.set_shown(page, shown);
+                self.settings.save();
+                if !shown && self.page == page {
+                    self.page = Page::Home;
+                    self.page_anim = None;
+                }
+                self.update_watchers();
+                self.refresh();
+            }
+            Command::Size(size) => {
+                self.settings.size = size;
+                self.settings.save();
+                self.place();
+            }
             Command::Theme(theme) => {
                 self.settings.theme = theme;
                 self.settings.save();
@@ -1733,7 +2418,10 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        let _ = unsafe { WTSUnRegisterSessionNotification(self.hwnd) };
+        unsafe {
+            let _ = WTSUnRegisterSessionNotification(self.hwnd);
+            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_ID);
+        }
     }
 }
 
@@ -1794,6 +2482,21 @@ fn primary_monitor() -> (HMONITOR, RECT) {
         let _ = GetMonitorInfoW(monitor, &mut info);
         (monitor, info.rcMonitor)
     }
+}
+
+/// Kabar yang tetap muncul (dan berbunyi) walau notch sedang senyap.
+fn urgent(hud: &Hud) -> bool {
+    matches!(hud, Hud::Power { low: true, .. } | Hud::Timer { .. })
+}
+
+/// DPI gambar notch: DPI layar dikali pilihan ukuran.
+fn scaled_dpi(dpi: u32, size: Size) -> u32 {
+    (dpi as f32 * size.factor()).round() as u32
+}
+
+/// Jam mengantuk maskot (23.00–04.59).
+fn night(hour: u16) -> bool {
+    !(5..23).contains(&hour)
 }
 
 fn monitor_dpi(monitor: HMONITOR) -> u32 {

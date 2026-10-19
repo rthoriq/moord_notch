@@ -1,16 +1,20 @@
 <#
-  Pasang notch sebagai paket "sparse" supaya bisa membaca notifikasi pesan (WhatsApp, dll.).
-  Cukup sekali, dan diulang hanya kalau isi folder packaging berubah. Jalankan di PowerShell
-  "Run as Administrator", setelah `cargo build --release`:
+  Pasang notch ke lokasi tetap (%LOCALAPPDATA%\Programs\NotchWindows), lengkap dengan identitas
+  paket supaya bisa membaca notifikasi pesan (WhatsApp, dll.). Cukup sekali, dan diulang hanya
+  kalau isi folder packaging berubah; untuk memasang build baru cukup packaging\update.ps1.
+  Jalankan di PowerShell "Run as Administrator", setelah `cargo build --release`:
 
-      powershell -ExecutionPolicy Bypass -File packaging\install.ps1
+      powershell -ExecutionPolicy Bypass -File "<folder proyek>\packaging\install.ps1"
 
   Yang dilakukan:
-  1. Membuat sertifikat tanda tangan pribadi "CN=NotchWindows Pribadi", hanya di laptop ini.
-  2. Membungkus packaging\package jadi target\package\NotchWindows.msix lalu menandatanganinya.
-  3. Memercayai sertifikat itu (LocalMachine\TrustedPeople), lalu MENGHAPUS kunci privatnya,
+  1. Menyalin target\release\notch.exe ke %LOCALAPPDATA%\Programs\NotchWindows. Build ulang di
+     folder proyek tidak lagi mengganggu notch yang sedang dipakai.
+  2. Membuat sertifikat tanda tangan pribadi "CN=NotchWindows Pribadi", hanya di laptop ini.
+  3. Membungkus packaging\package jadi target\package\NotchWindows.msix lalu menandatanganinya.
+  4. Memercayai sertifikat itu (LocalMachine\TrustedPeople), lalu MENGHAPUS kunci privatnya,
      jadi sertifikat ini tidak bisa dipakai menandatangani apa pun lagi.
-  4. Mendaftarkan paket dengan notch.exe tetap di target\release, lalu menjalankan notch lagi.
+  5. Mendaftarkan paket untuk notch di lokasi tetap, memindahkan "Mulai bersama Windows" ke
+     sana (kalau sedang aktif), lalu menjalankan notch.
 
   Tidak ada yang diunduh. Untuk mencabut semuanya: packaging\uninstall.ps1
 #>
@@ -18,15 +22,17 @@
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$release = Join-Path $root 'target\release'
-$exe = Join-Path $release 'notch.exe'
+$built = Join-Path $root 'target\release\notch.exe'
+$installDir = Join-Path $env:LOCALAPPDATA 'Programs\NotchWindows'
+$installed = Join-Path $installDir 'notch.exe'
 $source = Join-Path $PSScriptRoot 'package'
 $out = Join-Path $root 'target\package'
 $msix = Join-Path $out 'NotchWindows.msix'
 $cer = Join-Path $out 'NotchWindows.cer'
 $subject = 'CN=NotchWindows Pribadi'
+$run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 
-if (-not (Test-Path $exe)) { throw 'notch.exe belum ada. Jalankan dulu: cargo build --release' }
+if (-not (Test-Path $built)) { throw 'notch.exe belum ada. Jalankan dulu: cargo build --release' }
 
 # Alat dari Windows SDK, ikut terpasang bersama Visual Studio Build Tools.
 $makeappx = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.*\x64\makeappx.exe" -ErrorAction SilentlyContinue |
@@ -35,15 +41,20 @@ if (-not $makeappx) { throw 'Windows SDK (makeappx.exe) tidak ditemukan.' }
 $signtool = Join-Path $makeappx.DirectoryName 'signtool.exe'
 
 Write-Host 'Menghentikan notch...'
-Get-Process notch -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Stop-Process -Force
+Get-Process notch -ErrorAction SilentlyContinue | Where-Object { $_.Path -in @($built, $installed) } | Stop-Process -Force
+Start-Sleep -Milliseconds 500
 
 Write-Host 'Membersihkan pemasangan lama...'
 Get-AppxPackage -Name NotchWindows | Remove-AppxPackage
 Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -eq $subject | Remove-Item
 
+Write-Host "Menyalin notch ke $installDir..."
+New-Item -ItemType Directory -Force $installDir | Out-Null
+Copy-Item $built $installed -Force
+
 Write-Host 'Membungkus paket...'
 New-Item -ItemType Directory -Force $out | Out-Null
-# /nv: notch.exe sengaja tidak ada di dalam paket (letaknya di target\release).
+# /nv: notch.exe sengaja tidak ada di dalam paket (letaknya di folder pemasangan).
 & $makeappx.FullName pack /o /nv /d $source /p $msix | Out-Null
 if ($LASTEXITCODE) { throw "makeappx gagal (kode $LASTEXITCODE)" }
 
@@ -63,11 +74,17 @@ try {
 }
 
 Write-Host 'Mendaftarkan paket...'
-Add-AppxPackage -Path $msix -ExternalLocation $release
+Add-AppxPackage -Path $msix -ExternalLocation $installDir
+
+# "Mulai bersama Windows" yang masih menunjuk ke folder build dipindah ke lokasi tetap.
+if (Get-ItemProperty $run -Name NotchWindows -ErrorAction SilentlyContinue) {
+    Set-ItemProperty $run -Name NotchWindows -Value "`"$installed`""
+    Write-Host 'Mulai bersama Windows: sekarang memakai notch di lokasi tetap.'
+}
 
 # Dijalankan lewat Explorer supaya notch tidak ikut berjalan sebagai Administrator.
-Start-Process explorer.exe -ArgumentList "`"$exe`""
+Start-Process explorer.exe -ArgumentList "`"$installed`""
 Write-Host ''
-Write-Host 'Selesai. Notch berjalan lagi dengan identitas paket.'
+Write-Host "Selesai. Notch terpasang di $installDir dan sudah berjalan."
 Write-Host 'Kalau Windows bertanya izin membaca notifikasi, pilih Yes/Izinkan.'
-Write-Host 'Pilih jenis pesan di ikon tray: Pengaturan > Pesan masuk.'
+Write-Host 'Build berikutnya cukup dipasang dengan packaging\update.ps1 (tanpa Administrator).'

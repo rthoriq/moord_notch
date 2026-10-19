@@ -10,6 +10,7 @@ mod pages;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, TAU};
+use std::path::PathBuf;
 
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -57,7 +58,7 @@ use crate::privacy::Usage;
 use crate::settings::Theme;
 use crate::sysinfo::Stats;
 use crate::thumbnail::Thumbnail;
-use crate::widgets::Page;
+use crate::widgets::{Page, Pages};
 use crate::widgets::focus::Phase;
 use crate::widgets::shelf::Shelf;
 use crate::widgets::tasks::Tasks;
@@ -116,7 +117,43 @@ pub enum Hud {
     /// Caps Lock (`caps`) atau Num Lock dinyalakan/dimatikan.
     LockKey { caps: bool, on: bool },
     /// Pesan masuk; logonya dicari lewat `aumid` (lihat [`Renderer::set_logo`]).
-    Message { app: String, aumid: String, sender: String, text: String },
+    Message { app: String, aumid: String, sender: String, text: String, browser: bool },
+    /// Screenshot baru masuk shelf; `id` item shelf untuk thumbnail-nya, `more` = screenshot lain.
+    Screenshot { id: u64, name: String, more: usize },
+    /// Unduhan selesai; `more` = file lain yang selesai bersamaan.
+    Download { path: PathBuf, name: String, more: usize },
+    Wifi { name: String, connected: bool, internet: bool },
+    /// Timer cepat habis setelah `minutes` menit.
+    Timer { minutes: u32 },
+}
+
+/// Ekspresi maskot.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Mood {
+    #[default]
+    Normal,
+    /// Malam hari: mata setengah terpejam.
+    Sleepy,
+    /// Target minum tercapai, pomodoro selesai: mata "^ ^".
+    Happy,
+    /// Baterai lemah, kamera mulai dipakai: mata membulat.
+    Surprised,
+}
+
+/// Keadaan mata maskot.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Eyes {
+    /// 1 = terbuka, 0 = terpejam (berkedip).
+    pub open: f32,
+    /// Arah lirikan, masing-masing -1..1 (kiri..kanan, atas..bawah).
+    pub look: (f32, f32),
+    pub mood: Mood,
+}
+
+impl Default for Eyes {
+    fn default() -> Self {
+        Self { open: 1.0, look: (0.0, 0.0), mood: Mood::Normal }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -150,6 +187,17 @@ pub enum Hit {
     TaskRemove(usize),
     TaskInput,
     TasksClearDone,
+    /// Slider volume dan kecerahan (nilainya dari posisi klik, lihat [`Renderer::slider_value`]).
+    VolumeSlider,
+    BrightnessSlider,
+    VolumeMute,
+    MicToggle,
+    QuietToggle,
+    CityInput,
+    TimerToggle,
+    TimerCancel,
+    TimerAdd,
+    TimerPreset(u32),
 }
 
 impl Hit {
@@ -186,6 +234,32 @@ pub struct FocusView {
     pub minutes_left: u32,
 }
 
+pub struct TimerView {
+    pub running: bool,
+    /// Berjalan atau dijeda.
+    pub active: bool,
+    /// Sisa waktu, misal "04:59".
+    pub clock: String,
+    /// Sisa waktu singkat untuk pil, misal "5m" atau "45d".
+    pub short: String,
+    pub progress: f32,
+    pub total_minutes: u32,
+}
+
+/// Isi halaman kontrol cepat; `None` berarti tidak tersedia di laptop ini.
+pub struct ControlsView {
+    /// Volume 0..1 dan bisu.
+    pub volume: Option<(f32, bool)>,
+    /// Kecerahan 0..100.
+    pub brightness: Option<u32>,
+    /// Mikrofon dibisukan.
+    pub mic: Option<bool>,
+    /// Sisa menit mode senyap.
+    pub quiet_minutes: Option<u32>,
+    /// Tulisan tombol kota cuaca; `None` kalau cuaca dimatikan.
+    pub city: Option<String>,
+}
+
 pub struct WaterView {
     pub ml: u32,
     pub goal: u32,
@@ -201,8 +275,7 @@ pub struct Scene<'a> {
     pub height: f32,
     /// Transparansi tiap isi: pil, pil lirik, HUD, panel.
     pub alpha: [f32; CONTENTS],
-    /// 1 = mata terbuka, 0 = terpejam (berkedip).
-    pub eyes_open: f32,
+    pub eyes: Eyes,
     pub time: &'a str,
     pub date: &'a str,
     pub greeting: &'a str,
@@ -211,6 +284,8 @@ pub struct Scene<'a> {
     pub lyric: Option<&'a str>,
     pub hud: Option<&'a Hud>,
     pub page: Page,
+    /// Urutan halaman dan yang disembunyikan, untuk titik penanda.
+    pub pages: Pages,
     /// Halaman sebelumnya selama perpindahan: (halaman, progres 0..1, arah ±1).
     pub page_from: Option<(Page, f32, f32)>,
     pub shelf: &'a Shelf,
@@ -224,6 +299,12 @@ pub struct Scene<'a> {
     pub uptime: &'a str,
     /// Laptop terkunci: panel hanya menampilkan jam/musik, tanpa navigasi halaman.
     pub locked: bool,
+    pub timer: &'a TimerView,
+    pub controls: &'a ControlsView,
+    /// Cuaca untuk halaman jam, misal "28° Mendung · Jakarta".
+    pub weather: Option<&'a str>,
+    /// Nama kota yang sedang diketik.
+    pub city_draft: Option<&'a str>,
     pub hovered: Option<Hit>,
     /// Detik berjalan, untuk animasi gelombang musik.
     pub seconds: f64,
@@ -343,6 +424,10 @@ const ICON_CAMERA: char = '\u{E722}';
 const ICON_MICROPHONE: char = '\u{E720}';
 const ICON_BRIGHTNESS: char = '\u{E706}';
 const ICON_MESSAGE: char = '\u{E8BD}';
+const ICON_DOWNLOAD: char = '\u{E896}';
+const ICON_WIFI: char = '\u{E701}';
+const ICON_TIMER: char = '\u{E121}';
+const ICON_CONTROLS: char = '\u{E713}';
 const ICON_CHEVRON_LEFT: char = '\u{E76B}';
 const ICON_CHEVRON_RIGHT: char = '\u{E76C}';
 const ICON_CHEVRON_UP: char = '\u{E70E}';
@@ -530,6 +615,14 @@ impl Renderer {
             .map(|(_, hit)| *hit)
     }
 
+    /// Nilai slider (0..1) untuk posisi `x` (DIP), dari letak slider di frame penuh terakhir.
+    /// Posisi di luar slider dibatasi ke ujungnya, supaya slider tetap bisa diseret sampai habis.
+    pub fn slider_value(&self, hit: Hit, x: f32) -> Option<f32> {
+        let hits = self.hits.borrow();
+        let (area, _) = hits.iter().find(|(_, h)| *h == hit)?;
+        Some(((x - area.left) / (area.right - area.left).max(1.0)).clamp(0.0, 1.0))
+    }
+
     /// Ganti sampul album. Bitmap hanya dibuat ulang kalau sampulnya memang baru.
     pub fn set_art(&mut self, art: Option<&Art>) {
         let Some(art) = art else {
@@ -660,11 +753,12 @@ impl Renderer {
         self.patch(cx, cy, 10.0, 8.0, || self.wave(cx, cy, seconds, accent(color, self.pal.text), 1.0))
     }
 
-    /// Gambar ulang hanya mata maskot di pil yang sedang diam, untuk animasi berkedip.
-    pub fn draw_eyes(&self, open: f32) -> Result<RECT> {
+    /// Gambar ulang hanya mata maskot di pil yang sedang diam, untuk berkedip dan melirik.
+    /// Kotaknya cukup besar untuk lirikan terjauh dan mata yang membulat.
+    pub fn draw_eyes(&self, eyes: Eyes) -> Result<RECT> {
         let (w, h) = View::Pill.size();
         let (cx, cy) = (CANVAS.0 / 2.0 - w / 2.0 + 18.0, h / 2.0);
-        self.patch(cx, cy, 7.0, 6.0, || self.eyes(cx, cy, 3.4, 9.0, 7.5, open, 1.0))
+        self.patch(cx, cy, 11.0, 7.5, || self.eyes(cx, cy, 3.4, 9.0, 7.5, eyes, 1.0))
     }
 
     /// Gambar ulang kotak kecil berpusat di (`cx`, `cy`) yang seluruhnya berada di dalam badan
@@ -750,11 +844,41 @@ impl Renderer {
         }
     }
 
-    /// Sepasang mata kapsul; `open` mengecilkan tingginya saat berkedip.
-    fn eyes(&self, cx: f32, cy: f32, eye_w: f32, eye_h: f32, gap: f32, open: f32, alpha: f32) {
-        let h = (eye_h * open).max(eye_w * 0.45);
-        for x in [cx - gap / 2.0, cx + gap / 2.0] {
-            self.rounded(rect(x - eye_w / 2.0, cy - h / 2.0, x + eye_w / 2.0, cy + h / 2.0), eye_w.min(h) / 2.0, self.pal.eye, alpha);
+    /// Sepasang mata kapsul yang melirik ke arah `look`. Berkedip mengecilkan tingginya;
+    /// ekspresi mengubah bentuknya.
+    fn eyes(&self, cx: f32, cy: f32, eye_w: f32, eye_h: f32, gap: f32, eyes: Eyes, alpha: f32) {
+        let (dx, dy) = (eyes.look.0 * eye_w * 0.8, eyes.look.1 * eye_h * 0.16);
+        let gap = if eyes.mood == Mood::Surprised { gap * 1.15 } else { gap };
+        for x in [cx - gap / 2.0 + dx, cx + gap / 2.0 + dx] {
+            let y = cy + dy;
+            let (w, h, y) = match eyes.mood {
+                Mood::Happy => {
+                    self.happy_eye(x, y, eye_w, eye_h, alpha);
+                    continue;
+                }
+                Mood::Surprised => (eye_h * 0.62, (eye_h * 0.78 * eyes.open).max(eye_w * 0.45), y),
+                // Kelopak turun: mata pipih melebar, sedikit lebih rendah.
+                Mood::Sleepy => (eye_w * 1.3, (eye_h * 0.24 * eyes.open).max(eye_w * 0.4), y + eye_h * 0.18),
+                Mood::Normal => (eye_w, (eye_h * eyes.open).max(eye_w * 0.45), y),
+            };
+            self.rounded(rect(x - w / 2.0, y - h / 2.0, x + w / 2.0, y + h / 2.0), w.min(h) / 2.0, self.pal.eye, alpha);
+        }
+    }
+
+    /// Mata tersenyum: lengkung "^" dengan ujung membulat.
+    fn happy_eye(&self, x: f32, y: f32, eye_w: f32, eye_h: f32, alpha: f32) {
+        let r = eye_h * 0.32;
+        let base = y + r * 0.45;
+        unsafe {
+            let Ok(geometry) = self.factory.CreatePathGeometry() else { return };
+            let Ok(sink) = geometry.Open() else { return };
+            sink.BeginFigure(pt(x - r, base), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddArc(&arc(x + r, base, r, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            if sink.Close().is_ok() {
+                self.brush.SetColor(&with_alpha(self.pal.eye, alpha));
+                self.target.DrawGeometry(&geometry, &self.brush, eye_w * 0.62, &self.round);
+            }
         }
     }
 

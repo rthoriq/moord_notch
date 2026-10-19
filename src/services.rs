@@ -1,5 +1,5 @@
-//! Thread latar untuk layanan Windows yang berbasis WinRT/COM: media, volume, Bluetooth, dan
-//! pengukuran sistem.
+//! Thread latar untuk layanan Windows yang berbasis WinRT/COM: media, volume, Bluetooth,
+//! privasi, pesan, jaringan, dan pengukuran sistem.
 //!
 //! Callback dari Windows datang di thread acak. Semuanya diteruskan sebagai data biasa ke
 //! satu thread ini supaya diproses berurutan, lalu hasilnya dikirim ke jendela notch lewat
@@ -14,7 +14,7 @@ use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 use windows::core::Result;
 
-use crate::{audio, bluetooth, lyrics, media, messages, privacy, sysinfo, thumbnail};
+use crate::{audio, bluetooth, brightness, folders, lyrics, media, messages, network, privacy, sysinfo, thumbnail, weather};
 
 /// Dikirim ke jendela notch saat ada kabar baru di channel.
 pub const WM_SERVICE: u32 = WM_APP + 3;
@@ -25,11 +25,18 @@ const MEDIA_SETTLE: Duration = Duration::from_millis(60);
 const SYSTEM_EVERY: Duration = Duration::from_secs(1);
 /// Satu aplikasi yang mulai merekam biasanya memicu beberapa kabar sesi beruntun.
 const PRIVACY_SETTLE: Duration = Duration::from_millis(150);
+/// Selama slider kecerahan digeser, kecerahan diubah paling sering sekali per jeda ini.
+const BRIGHTNESS_EVERY: Duration = Duration::from_millis(60);
+/// Wi-Fi yang tersambung memicu beberapa kabar beruntun selama beberapa detik.
+const NETWORK_SETTLE: Duration = Duration::from_secs(2);
 
 /// Kabar dari layanan untuk jendela notch.
 pub enum Event {
     Media(Option<media::Snapshot>),
-    Volume { level: f32, muted: bool },
+    /// `initial` = keadaan awal perangkat (untuk slider), bukan perubahan yang perlu dikabarkan.
+    Volume { level: f32, muted: bool, initial: bool },
+    /// Mikrofon default dibisukan (`Some(true)`), atau `None` kalau tidak ada mikrofon.
+    Mic(Option<bool>),
     Bluetooth(bluetooth::Notice),
     BluetoothBattery { id: String, battery: u8 },
     Thumbnail(thumbnail::Thumbnail),
@@ -39,6 +46,12 @@ pub enum Event {
     /// Hasil permintaan izin membaca notifikasi (false juga berarti tidak terpasang sebagai paket).
     MessagesAccess(bool),
     Message(messages::Message),
+    Network(network::State),
+    /// File baru yang sudah selesai ditulis di folder Screenshots atau Downloads.
+    Files { kind: folders::Kind, paths: Vec<std::path::PathBuf> },
+    /// Hasil pencarian kota cuaca; `None` kalau tidak ditemukan atau gagal.
+    City(Option<weather::City>),
+    Weather(Option<weather::Weather>),
 }
 
 /// Pekerjaan untuk thread layanan.
@@ -55,6 +68,13 @@ pub enum Task {
     PrivacyChanged,
     /// Mulai/berhenti mendengarkan notifikasi pesan.
     WatchMessages(bool),
+    /// Mulai/berhenti memantau Wi-Fi; keadaan awalnya langsung dikirim.
+    WatchNetwork(bool),
+    NetworkChanged,
+    SetVolume(f32),
+    ToggleMute,
+    ToggleMic,
+    SetBrightness(u8),
     Quit,
 }
 
@@ -135,10 +155,15 @@ fn run(tasks: Sender<Task>, rx: Receiver<Task>, notify: Notifier) {
     let mut privacy = started("privasi", privacy::Monitor::new(tasks.clone(), notify.clone()));
     let mut system: Option<sysinfo::Monitor> = None;
     let mut chat: Option<messages::Monitor> = None;
+    let mut net: Option<network::Monitor> = None;
+    // Dibuat saat pertama dipakai; `Err` kalau layar tidak mendukung.
+    let mut screen: Option<Result<brightness::Brightness>> = None;
 
     let mut media_due = Some((Instant::now(), media::ALL));
     let mut system_due: Option<Instant> = None;
     let mut privacy_due: Option<Instant> = None;
+    let mut network_due: Option<Instant> = None;
+    let mut brightness_due: Option<(Instant, u8)> = None;
     // Hitungan pekerjaan per jenis (media, volume, bluetooth) untuk log debug tiap menit.
     let (mut counts, mut since) = ([0u32; 3], Instant::now());
     loop {
@@ -146,7 +171,10 @@ fn run(tasks: Sender<Task>, rx: Receiver<Task>, notify: Notifier) {
             debug_log!("layanan/menit: media {}, perangkat audio {}, bluetooth {}", counts[0], counts[1], counts[2]);
             (counts, since) = ([0; 3], Instant::now());
         }
-        let due = [media_due.map(|(due, _)| due), system_due, privacy_due].into_iter().flatten().min();
+        let due = [media_due.map(|(due, _)| due), system_due, privacy_due, network_due, brightness_due.map(|(due, _)| due)]
+            .into_iter()
+            .flatten()
+            .min();
         let task = match due {
             Some(due) => match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {
                 Ok(task) => Some(task),
@@ -171,6 +199,21 @@ fn run(tasks: Sender<Task>, rx: Receiver<Task>, notify: Notifier) {
                         notify.send(Event::System(monitor.sample()));
                         now + SYSTEM_EVERY
                     });
+                }
+                if let Some((due, percent)) = brightness_due
+                    && due <= now
+                {
+                    brightness_due = None;
+                    let screen = screen.get_or_insert_with(brightness::Brightness::new);
+                    if let Err(e) = screen.as_ref().map(|s| s.set(percent)) {
+                        debug_log!("kecerahan tidak bisa diubah: {e}");
+                    }
+                }
+                if network_due.is_some_and(|due| due <= now) {
+                    network_due = None;
+                    if net.is_some() {
+                        notify.send(Event::Network(network::state()));
+                    }
                 }
                 if privacy_due.is_some_and(|due| due <= now) {
                     privacy_due = None;
@@ -212,6 +255,39 @@ fn run(tasks: Sender<Task>, rx: Receiver<Task>, notify: Notifier) {
                 } else if !on {
                     chat = None;
                 }
+            }
+            Some(Task::WatchNetwork(on)) => {
+                if on && net.is_none() {
+                    net = started("jaringan", network::Monitor::new(tasks.clone()));
+                    network_due = Some(Instant::now());
+                } else if !on {
+                    net = None;
+                    network_due = None;
+                }
+            }
+            Some(Task::SetVolume(level)) => {
+                if let Some(monitor) = &audio {
+                    monitor.set_volume(level);
+                }
+            }
+            Some(Task::ToggleMute) => {
+                if let Some(monitor) = &audio {
+                    monitor.toggle_mute();
+                }
+            }
+            Some(Task::ToggleMic) => {
+                if let Some(monitor) = &audio {
+                    monitor.toggle_mic();
+                }
+            }
+            Some(Task::SetBrightness(percent)) => {
+                // Nilai terbaru dipakai; jadwalnya tidak dimundurkan supaya slider tetap terasa hidup.
+                let due = brightness_due.map_or(Instant::now() + BRIGHTNESS_EVERY, |(due, _)| due);
+                brightness_due = Some((due, percent));
+            }
+            Some(Task::NetworkChanged) => {
+                // Tunggu sampai kabar beruntunnya reda (setiap kabar baru memundurkan jadwal).
+                network_due = Some(Instant::now() + NETWORK_SETTLE);
             }
             Some(Task::Bluetooth(change)) => {
                 counts[2] += 1;

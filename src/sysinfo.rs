@@ -1,9 +1,14 @@
-//! Monitor sistem: CPU, GPU, RAM, disk C:, dan kecepatan jaringan. CPU dan GPU memakai
+//! Monitor sistem: CPU, GPU (beban dan suhu), RAM, disk C:, dan kecepatan jaringan. CPU dan GPU memakai
 //! Performance Counters Windows (angka yang sama dengan Task Manager). Hanya diukur selama
 //! halaman Sistem terbuka; di luar itu objeknya dilepas supaya tidak memakan memori.
 
 use std::time::Instant;
 
+use windows::Wdk::Graphics::Direct3D::{
+    D3DKMT_ADAPTER_PERFDATA, D3DKMT_ADAPTERINFO, D3DKMT_CLOSEADAPTER, D3DKMT_ENUMADAPTERS2,
+    D3DKMT_QUERYADAPTERINFO, D3DKMTCloseAdapter, D3DKMTEnumAdapters2, D3DKMTQueryAdapterInfo,
+    KMTQAITYPE_ADAPTERPERFDATA,
+};
 use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
 use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
@@ -21,6 +26,8 @@ pub struct Stats {
     pub cpu: f32,
     /// Persen beban 3D; `None` kalau penghitung GPU tidak tersedia.
     pub gpu: Option<f32>,
+    /// Suhu GPU terpanas dalam °C, kalau driver melaporkannya.
+    pub gpu_temp: Option<f32>,
     pub ram_used: u64,
     pub ram_total: u64,
     pub disk_free: u64,
@@ -66,6 +73,7 @@ impl Monitor {
             PdhCollectQueryData(self.query);
             stats.cpu = value(self.cpu).unwrap_or(0.0).clamp(0.0, 100.0) as f32;
             stats.gpu = self.gpu.and_then(|gpu| sum(gpu)).map(|v| v.clamp(0.0, 100.0) as f32);
+            stats.gpu_temp = gpu_temperature();
 
             let mut memory = MEMORYSTATUSEX { dwLength: size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
             if GlobalMemoryStatusEx(&mut memory).is_ok() {
@@ -143,6 +151,38 @@ fn network_totals() -> Option<(u64, u64)> {
     }
 }
 
+/// Suhu GPU terpanas dalam °C, dari data kinerja driver grafis (sumber yang sama dengan
+/// Task Manager). `None` kalau driver tidak melaporkannya, misalnya saat GPU sedang tidur.
+pub fn gpu_temperature() -> Option<f32> {
+    unsafe {
+        let mut list = D3DKMT_ENUMADAPTERS2::default();
+        if D3DKMTEnumAdapters2(&mut list).is_err() || list.NumAdapters == 0 {
+            return None;
+        }
+        let mut adapters = vec![D3DKMT_ADAPTERINFO::default(); list.NumAdapters as usize];
+        list.pAdapters = adapters.as_mut_ptr();
+        if D3DKMTEnumAdapters2(&mut list).is_err() {
+            return None;
+        }
+        let mut hottest: Option<u32> = None;
+        for adapter in adapters.iter().take(list.NumAdapters as usize) {
+            let mut perf = D3DKMT_ADAPTER_PERFDATA::default();
+            let mut query = D3DKMT_QUERYADAPTERINFO {
+                hAdapter: adapter.hAdapter,
+                Type: KMTQAITYPE_ADAPTERPERFDATA,
+                pPrivateDriverData: (&mut perf as *mut D3DKMT_ADAPTER_PERFDATA).cast(),
+                PrivateDriverDataSize: size_of::<D3DKMT_ADAPTER_PERFDATA>() as u32,
+            };
+            // Satuannya sepersepuluh derajat.
+            if D3DKMTQueryAdapterInfo(&mut query).is_ok() && perf.Temperature > 0 {
+                hottest = Some(hottest.unwrap_or(0).max(perf.Temperature));
+            }
+            let _ = D3DKMTCloseAdapter(&D3DKMT_CLOSEADAPTER { hAdapter: adapter.hAdapter });
+        }
+        hottest.map(|t| t as f32 / 10.0)
+    }
+}
+
 /// "9,8 GB"
 pub fn gigabytes(bytes: u64) -> String {
     format!("{:.1} GB", bytes as f64 / 1_073_741_824.0).replace('.', ",")
@@ -177,5 +217,6 @@ mod tests {
         assert!(stats.ram_total > 0 && stats.ram_used <= stats.ram_total);
         assert!(stats.disk_total > 0 && stats.disk_free <= stats.disk_total);
         assert!((0.0..=100.0).contains(&stats.cpu));
+        assert!(stats.gpu_temp.is_none_or(|t| (1.0..130.0).contains(&t)));
     }
 }

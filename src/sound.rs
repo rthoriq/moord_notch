@@ -22,7 +22,10 @@ pub enum Sound {
     LowBattery,
     /// Aplikasi mulai memakai kamera/mikrofon.
     Privacy,
-    Message,
+    /// Unduhan selesai.
+    Download,
+    /// Timer cepat habis.
+    Alarm,
 }
 
 impl Sound {
@@ -35,7 +38,8 @@ impl Sound {
             Sound::Disconnect => w!("DeviceDisconnect"),
             Sound::LowBattery => w!("LowBatteryAlarm"),
             Sound::Privacy => w!("SystemNotification"),
-            Sound::Message => w!("Notification.IM"),
+            Sound::Alarm => w!("Notification.Looping.Alarm"),
+            Sound::Download => w!("Notification.Default"),
         }
     }
 }

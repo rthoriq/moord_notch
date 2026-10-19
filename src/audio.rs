@@ -1,5 +1,6 @@
-//! Volume speaker: dengarkan perubahan volume perangkat output default, dan pindah
-//! otomatis saat perangkat default berganti (misal headset Bluetooth tersambung).
+//! Volume speaker dan bisu mikrofon: dengarkan perubahannya di perangkat default, pindah
+//! otomatis saat perangkat default berganti (misal headset Bluetooth tersambung), dan ubah
+//! keduanya dari halaman kontrol cepat.
 
 use std::sync::Mutex;
 use std::sync::mpsc::Sender;
@@ -10,17 +11,22 @@ use windows::Win32::Media::Audio::Endpoints::{
 };
 use windows::Win32::Media::Audio::{
     AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE, EDataFlow, ERole, IMMDeviceEnumerator,
-    IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator, eMultimedia, eRender,
+    IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator, eCapture, eConsole, eMultimedia,
+    eRender,
 };
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
 use windows::core::{PCWSTR, Result, implement};
 
 use crate::services::{Event, Notifier, Task};
 
+type Endpoint = (IAudioEndpointVolume, IAudioEndpointVolumeCallback);
+
 pub struct Monitor {
     enumerator: IMMDeviceEnumerator,
     client: IMMNotificationClient,
-    endpoint: Option<(IAudioEndpointVolume, IAudioEndpointVolumeCallback)>,
+    endpoint: Option<Endpoint>,
+    /// Mikrofon default, untuk tombol bisu.
+    mic: Option<Endpoint>,
     notify: Notifier,
 }
 
@@ -30,23 +36,57 @@ impl Monitor {
             let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
             let client: IMMNotificationClient = DeviceClient { tasks }.into();
             enumerator.RegisterEndpointNotificationCallback(&client)?;
-            let mut monitor = Self { enumerator, client, endpoint: None, notify };
+            let mut monitor = Self { enumerator, client, endpoint: None, mic: None, notify };
             monitor.attach_default();
             Ok(monitor)
         }
     }
 
-    /// Dengarkan volume perangkat output default yang sekarang.
+    /// Dengarkan volume speaker dan bisu mikrofon default yang sekarang.
     pub fn attach_default(&mut self) {
         self.detach();
         match attach(&self.enumerator, &self.notify) {
             Ok(endpoint) => self.endpoint = Some(endpoint),
             Err(e) => debug_log!("perangkat audio default tidak bisa dipantau: {e}"),
         }
+        self.mic = attach_mic(&self.enumerator, &self.notify).ok();
+        if self.mic.is_none() {
+            self.notify.send(Event::Mic(None));
+        }
+    }
+
+    pub fn set_volume(&self, level: f32) {
+        if let Some((volume, _)) = &self.endpoint {
+            unsafe {
+                let _ = volume.SetMasterVolumeLevelScalar(level.clamp(0.0, 1.0), std::ptr::null());
+                // Menggeser volume juga membatalkan bisu, seperti slider Windows.
+                let _ = volume.SetMute(false, std::ptr::null());
+            }
+        }
+    }
+
+    pub fn toggle_mute(&self) {
+        if let Some((volume, _)) = &self.endpoint {
+            unsafe {
+                if let Ok(muted) = volume.GetMute() {
+                    let _ = volume.SetMute(!muted.as_bool(), std::ptr::null());
+                }
+            }
+        }
+    }
+
+    pub fn toggle_mic(&self) {
+        if let Some((mic, _)) = &self.mic {
+            unsafe {
+                if let Ok(muted) = mic.GetMute() {
+                    let _ = mic.SetMute(!muted.as_bool(), std::ptr::null());
+                }
+            }
+        }
     }
 
     fn detach(&mut self) {
-        if let Some((volume, callback)) = self.endpoint.take() {
+        for (volume, callback) in [self.endpoint.take(), self.mic.take()].into_iter().flatten() {
             let _ = unsafe { volume.UnregisterControlChangeNotify(&callback) };
         }
     }
@@ -59,17 +99,28 @@ impl Drop for Monitor {
     }
 }
 
-fn attach(
-    enumerator: &IMMDeviceEnumerator,
-    notify: &Notifier,
-) -> Result<(IAudioEndpointVolume, IAudioEndpointVolumeCallback)> {
+fn attach(enumerator: &IMMDeviceEnumerator, notify: &Notifier) -> Result<Endpoint> {
     unsafe {
         let device = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia)?;
         let volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None)?;
-        // Nilai awal disimpan supaya kabar pertama yang sama tidak memunculkan HUD.
-        let current = key(volume.GetMasterVolumeLevelScalar()?, volume.GetMute()?.as_bool());
+        // Nilai awal disimpan supaya kabar pertama yang sama tidak memunculkan HUD, dan dikirim
+        // sebagai keadaan awal untuk slider di halaman kontrol.
+        let (level, muted) = (volume.GetMasterVolumeLevelScalar()?, volume.GetMute()?.as_bool());
+        notify.send(Event::Volume { level, muted, initial: true });
         let callback: IAudioEndpointVolumeCallback =
-            VolumeCallback { notify: notify.clone(), last: Mutex::new(Some(current)) }.into();
+            VolumeCallback { notify: notify.clone(), last: Mutex::new(Some(key(level, muted))) }.into();
+        volume.RegisterControlChangeNotify(&callback)?;
+        Ok((volume, callback))
+    }
+}
+
+fn attach_mic(enumerator: &IMMDeviceEnumerator, notify: &Notifier) -> Result<Endpoint> {
+    unsafe {
+        let device = enumerator.GetDefaultAudioEndpoint(eCapture, eConsole)?;
+        let volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None)?;
+        let muted = volume.GetMute()?.as_bool();
+        notify.send(Event::Mic(Some(muted)));
+        let callback: IAudioEndpointVolumeCallback = MicCallback { notify: notify.clone(), last: Mutex::new(muted) }.into();
         volume.RegisterControlChangeNotify(&callback)?;
         Ok((volume, callback))
     }
@@ -93,7 +144,27 @@ impl IAudioEndpointVolumeCallback_Impl for VolumeCallback_Impl {
         let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
         if *last != Some(key(level, muted)) {
             *last = Some(key(level, muted));
-            self.notify.send(Event::Volume { level, muted });
+            self.notify.send(Event::Volume { level, muted, initial: false });
+        }
+        Ok(())
+    }
+}
+
+/// Hanya bisu/tidaknya mikrofon yang dikabarkan; volume rekamnya tidak dipakai.
+#[implement(IAudioEndpointVolumeCallback)]
+struct MicCallback {
+    notify: Notifier,
+    last: Mutex<bool>,
+}
+
+impl IAudioEndpointVolumeCallback_Impl for MicCallback_Impl {
+    fn OnNotify(&self, data: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> Result<()> {
+        let Some(data) = (unsafe { data.as_ref() }) else { return Ok(()) };
+        let muted = data.bMuted.as_bool();
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if *last != muted {
+            *last = muted;
+            self.notify.send(Event::Mic(Some(muted)));
         }
         Ok(())
     }
@@ -120,7 +191,7 @@ impl IMMNotificationClient_Impl for DeviceClient_Impl {
     }
 
     fn OnDefaultDeviceChanged(&self, flow: EDataFlow, role: ERole, _id: &PCWSTR) -> Result<()> {
-        if flow == eRender && role == eMultimedia {
+        if (flow == eRender && role == eMultimedia) || (flow == eCapture && role == eConsole) {
             let _ = self.tasks.send(Task::AudioDeviceChanged);
         }
         Ok(())

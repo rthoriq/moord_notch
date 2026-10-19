@@ -13,6 +13,8 @@ struct Sample {
     water: WaterView,
     privacy: Usage,
     system: Stats,
+    timer: TimerView,
+    controls: ControlsView,
 }
 
 fn sample() -> Sample {
@@ -58,6 +60,7 @@ fn sample() -> Sample {
         system: Stats {
             cpu: 23.0,
             gpu: Some(64.0),
+            gpu_temp: Some(71.0),
             ram_used: 10_522_669_875,
             ram_total: 16_857_853_952,
             disk_free: 120_000_000_000,
@@ -65,7 +68,20 @@ fn sample() -> Sample {
             down: 1_258_291.0,
             up: 81_920.0,
         },
+        timer: idle_timer(),
+        controls: ControlsView {
+            volume: Some((0.62, false)),
+            brightness: Some(70),
+            mic: Some(false),
+            quiet_minutes: None,
+            city: Some("Kota: Jakarta".into()),
+        },
     }
+}
+
+/// Timer yang tidak berjalan, untuk keadaan selain halaman/pil timer.
+fn idle_timer() -> TimerView {
+    TimerView { running: false, active: false, clock: "00:00".into(), short: String::new(), progress: 0.0, total_minutes: 0 }
 }
 
 /// Satu keadaan yang dirender ke gambar preview.
@@ -80,6 +96,10 @@ struct State<'a> {
     hud: Option<&'a Hud>,
     hovered: Option<Hit>,
     locked: bool,
+    eyes: Eyes,
+    pages: Pages,
+    weather: Option<&'a str>,
+    city_draft: Option<&'a str>,
 }
 
 impl<'a> State<'a> {
@@ -95,6 +115,10 @@ impl<'a> State<'a> {
             hud: None,
             hovered: None,
             locked: false,
+            eyes: Eyes::default(),
+            pages: Pages::default(),
+            weather: None,
+            city_draft: None,
         }
     }
 }
@@ -126,10 +150,44 @@ fn preview_states() {
         aumid: "contoh!App".into(),
         sender: "Ibu".into(),
         text: "Nak, nanti pulang jam berapa? Ibu masak sayur asem kesukaanmu".into(),
+        browser: false,
+    };
+    let screenshot = Hud::Screenshot { id: 2, name: "Screenshot 2026-10-19 101112.png".into(), more: 0 };
+    let download = Hud::Download { path: PathBuf::from("C:\\contoh\\laporan.pdf"), name: "Laporan Keuangan Q3 2026.pdf".into(), more: 2 };
+    let wifi = Hud::Wifi { name: "Rumah 5G".into(), connected: true, internet: true };
+    let wifi_limited = Hud::Wifi { name: "Kafe Senja".into(), connected: true, internet: false };
+    let mood = |mood| Eyes { mood, ..Eyes::default() };
+    let mut few_pages = Pages::default();
+    few_pages.set_shown(Page::Water, false);
+    few_pages.set_shown(Page::System, false);
+    few_pages.move_by(Page::Tasks, -1);
+    let timer_done = Hud::Timer { minutes: 5 };
+    let running = TimerView {
+        running: true,
+        active: true,
+        clock: "03:42".into(),
+        short: "4m".into(),
+        progress: 0.26,
+        total_minutes: 5,
+    };
+    let muted_controls = ControlsView {
+        volume: Some((0.3, true)),
+        brightness: None,
+        mic: Some(true),
+        quiet_minutes: Some(42),
+        city: None,
     };
     let message_locked =
-        Hud::Message { app: String::new(), aumid: "contoh!App".into(), sender: "WhatsApp".into(), text: "Pesan baru".into() };
+        Hud::Message {
+        app: String::new(),
+        aumid: "contoh!App".into(),
+        sender: "WhatsApp".into(),
+        text: "Pesan baru".into(),
+        browser: false,
+    };
 
+    // Maskot di pil hanya terlihat kalau pomodoro tidak berjalan.
+    let idle = FocusView { running: false, active: false, ..sample().focus };
     let states = [
         State::new("pill", View::Pill, Page::Home),
         State { media: true, ..State::new("pill_music", View::Pill, Page::Home) },
@@ -163,6 +221,27 @@ fn preview_states() {
         State { theme: Theme::Glass, ..State::new("theme_glass_pill", View::Pill, Page::Home) },
         State { theme: Theme::Glass, media: true, ..State::new("theme_glass", View::Panel, Page::Home) },
         State { theme: Theme::Glass, hud: Some(&message), ..State::new("theme_glass_hud", View::Hud, Page::Home) },
+        State { eyes: mood(Mood::Happy), ..State::new("mood_happy", View::Pill, Page::Home) },
+        State { eyes: mood(Mood::Sleepy), ..State::new("mood_sleepy", View::Pill, Page::Home) },
+        State { eyes: mood(Mood::Surprised), ..State::new("mood_surprised", View::Pill, Page::Home) },
+        State { eyes: Eyes { look: (1.0, 1.0), ..Eyes::default() }, ..State::new("mood_look", View::Pill, Page::Home) },
+        State { eyes: mood(Mood::Happy), ..State::new("mood_happy_panel", View::Panel, Page::Home) },
+        State { eyes: Eyes { look: (-1.0, 0.6), mood: Mood::Surprised, open: 1.0 }, ..State::new("mood_surprised_panel", View::Panel, Page::Home) },
+        State { hud: Some(&screenshot), ..State::new("hud_screenshot", View::Hud, Page::Home) },
+        State { hud: Some(&download), ..State::new("hud_download", View::Hud, Page::Home) },
+        State { hud: Some(&wifi), ..State::new("hud_wifi", View::Hud, Page::Home) },
+        State { hud: Some(&wifi_limited), ..State::new("hud_wifi_limited", View::Hud, Page::Home) },
+        State { pages: few_pages, ..State::new("pages_custom", View::Panel, Page::Tasks) },
+        State { dpi: 84, ..State::new("size_small", View::Pill, Page::Home) },
+        State { dpi: 110, media: true, ..State::new("size_large", View::Panel, Page::Home) },
+        State { hovered: Some(Hit::VolumeSlider), ..State::new("page_controls", View::Panel, Page::Controls) },
+        State { city_draft: Some("Yogya"), ..State::new("page_controls_city", View::Panel, Page::Controls) },
+        State::new("page_controls_muted", View::Panel, Page::Controls),
+        State { hovered: Some(Hit::TimerPreset(5)), ..State::new("page_timer", View::Panel, Page::Timer) },
+        State::new("page_timer_idle", View::Panel, Page::Timer),
+        State::new("pill_timer", View::Pill, Page::Home),
+        State { hud: Some(&timer_done), ..State::new("hud_timer", View::Hud, Page::Home) },
+        State { weather: Some("28° Mendung · Jakarta"), ..State::new("page_clock_weather", View::Panel, Page::Home) },
     ];
     for state in states {
         let mut renderer = Renderer::new(state.dpi, state.theme).unwrap();
@@ -184,7 +263,7 @@ fn preview_states() {
             width,
             height,
             alpha,
-            eyes_open: 1.0,
+            eyes: state.eyes,
             time: "19:21",
             date: "Senin, 19 Oktober 2026",
             greeting: "Selamat malam",
@@ -192,10 +271,11 @@ fn preview_states() {
             lyric: state.lyric,
             hud: state.hud,
             page: state.page,
+            pages: state.pages,
             page_from: None,
             shelf: &data.shelf,
             tasks: &data.tasks,
-            focus: &data.focus,
+            focus: if state.name.starts_with("mood") || state.name == "size_small" { &idle } else { &data.focus },
             water: &data.water,
             privacy: &data.privacy,
             system: Some(&data.system),
@@ -203,6 +283,10 @@ fn preview_states() {
             hovered: state.hovered,
             seconds: 1.3,
             locked: state.locked,
+            timer: if state.name.contains("timer") && !state.name.ends_with("idle") { &running } else { &data.timer },
+            controls: if state.name.ends_with("muted") { &muted_controls } else { &data.controls },
+            weather: state.weather,
+            city_draft: state.city_draft,
         };
         renderer.draw(&scene).unwrap();
         let _ = unsafe { GdiFlush() };
@@ -221,7 +305,7 @@ fn scene_for<'a>(data: &'a Sample, view: View, page: Page, media: bool) -> Scene
         width,
         height,
         alpha,
-        eyes_open: 1.0,
+        eyes: Eyes::default(),
         time: "19:21",
         date: "",
         greeting: "",
@@ -229,6 +313,7 @@ fn scene_for<'a>(data: &'a Sample, view: View, page: Page, media: bool) -> Scene
         lyric: None,
         hud: None,
         page,
+        pages: Pages::default(),
         page_from: None,
         shelf: &data.shelf,
         tasks: &data.tasks,
@@ -240,6 +325,49 @@ fn scene_for<'a>(data: &'a Sample, view: View, page: Page, media: bool) -> Scene
         hovered: None,
         seconds: 0.0,
         locked: false,
+        timer: &data.timer,
+        controls: &data.controls,
+        weather: None,
+        city_draft: None,
+    }
+}
+
+/// Gambar ulang mata saja (berkedip, melirik, ganti ekspresi) harus sama persis dengan gambar
+/// penuh: tidak ada bagian mata yang tertinggal di luar kotak kecilnya.
+#[test]
+fn eye_patch_covers_every_expression() {
+    let data = sample();
+    let mut variants = vec![Eyes::default()];
+    for mood in [Mood::Normal, Mood::Sleepy, Mood::Happy, Mood::Surprised] {
+        for look in [(-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (1.0, -1.0)] {
+            variants.push(Eyes { open: 1.0, look, mood });
+        }
+    }
+    // Mata hanya tampil di pil kalau pomodoro tidak berjalan.
+    let idle = FocusView { running: false, ..sample().focus };
+    for dpi in [96, 144] {
+        let mut renderer = Renderer::new(dpi, Theme::Black).unwrap();
+        for eyes in &variants {
+            let mut scene = scene_for(&data, View::Pill, Page::Home, false);
+            scene.focus = &idle;
+            scene.eyes = *eyes;
+            renderer.draw(&scene).unwrap();
+            let _ = unsafe { GdiFlush() };
+            let full = renderer.surface.pixels().to_vec();
+
+            scene.eyes = Eyes::default();
+            renderer.draw(&scene).unwrap();
+            renderer.draw_eyes(*eyes).unwrap();
+            let _ = unsafe { GdiFlush() };
+            let patched = renderer.surface.pixels();
+            let worst = full
+                .iter()
+                .zip(patched.iter())
+                .map(|(a, b)| (0..4).map(|i| ((a >> (i * 8)) & 0xFF).abs_diff((b >> (i * 8)) & 0xFF)).max().unwrap_or(0))
+                .max()
+                .unwrap_or(0);
+            assert!(worst <= 2, "mata {eyes:?} pada {dpi} DPI keluar dari kotaknya (selisih {worst})");
+        }
     }
 }
 

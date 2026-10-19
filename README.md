@@ -1,9 +1,9 @@
 # Notch Windows
 
 Notch pribadi di tengah atas layar laptop, dibuat sendiri dengan Rust + `windows-rs`
-(crate resmi Microsoft). Semua berjalan lokal: tidak ada akun atau telemetri, dan satu-satunya
-koneksi internet adalah fitur lirik yang mati secara default (lihat Tahap 4). Kabar pesan masuk
-dibaca dari notifikasi Windows di laptop sendiri, tanpa internet.
+(crate resmi Microsoft). Semua berjalan lokal: tidak ada akun atau telemetri. Koneksi internet
+hanya dipakai oleh lirik (Tahap 4) dan cuaca (Tahap 6), keduanya mati secara default. Kabar pesan
+masuk dibaca dari notifikasi Windows di laptop sendiri, tanpa internet.
 
 ## Tahap 1: dasar notch
 
@@ -78,9 +78,10 @@ Data disimpan sebagai file teks biasa di `%APPDATA%\NotchWindows`: `shelf.txt`, 
 
 Semua pengaturan ada di menu tray → **Pengaturan**.
 
-- **Suara notifikasi**: bunyi bawaan Windows untuk pengingat minum, pomodoro selesai, charger,
-  Bluetooth, baterai lemah, kamera/mikrofon, dan pesan masuk. Diam otomatis saat full-screen,
-  presentasi, atau Focus/Jangan Ganggu. Volume, kecerahan, dan Caps Lock sengaja tanpa bunyi.
+- **Suara notifikasi**: bunyi bawaan Windows untuk pengingat minum, pomodoro dan timer selesai,
+  charger, Bluetooth, Wi-Fi, unduhan, baterai lemah, dan kamera/mikrofon. Diam otomatis saat
+  full-screen, presentasi, atau Focus/Jangan Ganggu. Volume, kecerahan, Caps Lock, dan pesan masuk
+  sengaja tanpa bunyi dari notch (aplikasi pengirim pesan sudah berbunyi sendiri).
 - **Lock screen**: notch tetap tampil saat laptop dikunci (Win+L), tapi hanya jam dan kontrol
   musik; halaman lain tidak bisa dibuka, dan kabar pesan hanya berbunyi "Pesan baru" tanpa nama
   pengirim. Layar isi PIN/kata sandi adalah desktop aman Windows, jadi di sana tidak ada aplikasi
@@ -91,29 +92,100 @@ Semua pengaturan ada di menu tray → **Pengaturan**.
 - **Pesan masuk** (WhatsApp, atau semua aplikasi chat): kabar berisi logo aplikasi, pengirim,
   dan potongan pesan. Klik kabarnya untuk membuka aplikasinya. "Sembunyikan isi pesan" hanya
   menampilkan pengirim. Windows hanya mengizinkan aplikasi berpaket membaca notifikasi, jadi
-  fitur ini perlu dipasang sekali (lihat di bawah).
-
-### Memasang kabar pesan masuk
-
-1. Build versi rilis: `cargo build --release`.
-2. Buka PowerShell dengan **Run as Administrator**, masuk ke folder proyek, lalu jalankan:
-
-   ```bash
-   powershell -ExecutionPolicy Bypass -File packaging\install.ps1
-   ```
-
-3. Kalau Windows bertanya izin membaca notifikasi, pilih izinkan.
-4. Menu tray → Pengaturan → Pesan masuk → pilih "Hanya WhatsApp" atau "Semua aplikasi chat".
-
-Skrip ini membuat sertifikat pribadi yang hanya ada di laptop ini, menandatangani paket kecil
-berisi manifest dan logo (`packaging\package`), memercayai sertifikatnya, lalu **menghapus kunci
-privatnya** supaya sertifikat itu tidak bisa dipakai menandatangani apa pun lagi. notch.exe tetap
-di `target\release`; paket hanya memberinya identitas. Tidak ada yang diunduh. Ulangi skrip ini
-hanya kalau isi folder `packaging` berubah; build ulang exe biasa tidak perlu. Untuk mencabut:
-`packaging\uninstall.ps1` (juga sebagai Administrator).
+  notch perlu dipasang dengan `packaging\install.ps1` (lihat "Pasang dan perbarui"). Setelah itu
+  pilih jenisnya di menu tray → Pengaturan → Pesan masuk.
 
 Kalau izin pernah ditolak, nyalakan lagi di Pengaturan Windows → Privasi & keamanan →
 Notifikasi → izinkan aplikasi mengakses notifikasi.
+
+**WhatsApp Web** dan situs chat lain di browser: Windows hanya memberi judul dan isi
+notifikasi browser, tanpa alamat situs pengirimnya, jadi notch tidak bisa membedakan WhatsApp Web
+dari situs lain. Nyalakan **Pesan masuk → Notifikasi browser (WhatsApp Web, dll.)** untuk
+menampilkan semua notifikasi browser sebagai pesan (berlabel nama browser, misal "Brave"). Supaya
+isinya hanya pesan chat, izinkan notifikasi hanya untuk situs chat di browser (Brave:
+`brave://settings/content/notifications`). Mengklik kabarnya membawa ke jendela WhatsApp kalau
+ada, lalu ke jendela browsernya. Untuk logo dan nama yang tepat, pakai aplikasi WhatsApp Desktop.
+
+Untuk memeriksa apa yang dilihat notch, jalankan (bisa tanpa Administrator):
+
+```bash
+"%LOCALAPPDATA%\Programs\NotchWindows\notch.exe" --cek-notifikasi
+```
+
+Hasilnya ada di `%TEMP%\notch-cek-notifikasi.txt`: status izin dan daftar notifikasi di pusat
+notifikasi beserta cara notch memilahnya. Isi pesan dan nama pengirim tidak ikut ditulis.
+
+## Tahap 5: pintasan, halaman, maskot, dan kabar baru
+
+- **Pintasan Win+Alt+N**: membuka panel, tekan lagi untuk menutup. Kalau kursor tidak datang ke
+  notch, panel menutup sendiri setelah 5 detik. Windows hanya mengabari saat kombinasi ini
+  ditekan; tombol lain tidak dibaca. Bisa dimatikan di Pengaturan.
+- **Atur halaman**: menu tray → Halaman untuk menyembunyikan/menampilkan halaman (Beranda selalu
+  ada). Klik kanan di panel untuk menggeser halaman yang sedang dibuka ke kiri/kanan,
+  menyembunyikannya, atau menampilkan lagi halaman yang tersembunyi. Halaman yang disembunyikan
+  ikut mematikan fiturnya: Minum air → tanpa pengingat, Shelf → tidak menerima file dan screenshot.
+- **Ukuran notch**: menu tray → Ukuran: Kecil, Sedang (bawaan), atau Besar.
+- **Maskot lebih hidup**: mata melirik ke arah kursor dan kembali menatap ke depan kalau kursor
+  lama diam; setengah terpejam pukul 23.00–05.00; tersenyum "^ ^" saat target minum tercapai atau
+  sesi fokus selesai; membulat kaget saat baterai lemah atau kamera/mikrofon mulai dipakai.
+- **Screenshot masuk shelf**: hasil Win+Shift+S, PrtScn, atau Win+PrtScn yang tersimpan di
+  `Pictures\Screenshots` langsung masuk shelf dengan thumbnail-nya, siap diseret ke WA/Discord.
+- **Unduhan selesai**: kabar saat file baru di folder Downloads selesai diunduh (file sementara
+  browser seperti `.crdownload`/`.part` diabaikan sampai selesai). Klik kabarnya untuk melihat
+  file di File Explorer; file tidak pernah dibuka otomatis.
+- **Wi-Fi**: kabar saat tersambung (beserta nama jaringannya), terputus, atau kehilangan akses
+  internet. Nama jaringan diambil dari nama profilnya, jadi tidak perlu izin lokasi.
+- **Suhu GPU** di halaman Sistem, dari data driver grafis yang sama dengan Task Manager
+  (oranye mulai 78 °C, merah mulai 87 °C). Suhu CPU tidak ditampilkan karena Windows tidak
+  menyediakannya tanpa hak admin atau driver tambahan.
+
+## Tahap 6: kontrol cepat, timer, cuaca, dan mode rapat
+
+- **Kontrol cepat** (halaman baru): slider volume dan kecerahan (klik, seret, atau putar roda
+  mouse di atasnya), klik ikon speaker untuk bisu, tombol bisukan mikrofon, dan **Senyap 1 jam**:
+  notch tidak memunculkan kabar dan tidak berbunyi, kecuali baterai lemah dan timer habis.
+  Windows tidak menyediakan cara resmi untuk menyalakan Jangan Ganggu dari aplikasi lain, jadi
+  senyap ini hanya untuk notch. Kecerahan hanya untuk layar laptop; monitor eksternal diatur dari
+  tombolnya sendiri.
+- **Timer cepat** (halaman baru): 1, 5, 10, atau 15 menit, bisa dijeda dan ditambah semenit.
+  Selama berjalan, pil menampilkan cincin oranye dan sisa waktunya (detik di menit terakhir).
+  Saat habis muncul kabar "Timer selesai" dengan bunyi alarm Windows.
+- **Cuaca (opsional, memakai internet)**: menu tray → Pengaturan → Cuaca. Saat pertama dinyalakan,
+  panel meminta nama kota. Data dari [Open-Meteo](https://open-meteo.com), tanpa akun dan tanpa
+  API key. Yang dikirim hanya nama kota yang diketik (sekali, untuk mencari koordinatnya) lalu
+  koordinat pusat kota itu tiap 30 menit; lokasi laptop tidak pernah dibaca. Cuaca tampil di
+  halaman jam ("29° Cerah · Jakarta") dan di tombol kota pada halaman kontrol. Ganti kota dengan
+  mengklik tombol itu.
+- **Mode rapat** (menyala secara default): selama kamera atau mikrofon dipakai (Zoom, Meet, saat
+  berbagi layar), kabar pesan hanya berbunyi "Pesan baru" tanpa pengirim dan isinya, dan notch
+  tidak berbunyi (bisa terdengar peserta lain), kecuali kabar bahwa kamera/mikrofon baru dinyalakan.
+
+## Pasang dan perbarui
+
+Notch dipasang di `%LOCALAPPDATA%\Programs\NotchWindows`, terpisah dari folder build, jadi build
+ulang tidak mengganggu notch yang sedang dipakai.
+
+**Pasang (sekali)**, setelah `cargo build --release`, di PowerShell **Run as Administrator**:
+
+```bash
+powershell -ExecutionPolicy Bypass -File "D:\Penyimpanan Utama\Documents\My mine\Notch Windows\packaging\install.ps1"
+```
+
+Skrip ini menyalin notch.exe ke lokasi tetap, membuat sertifikat pribadi yang hanya ada di laptop
+ini, menandatangani paket kecil berisi manifest dan logo (`packaging\package`), memercayai
+sertifikatnya, lalu **menghapus kunci privatnya** supaya sertifikat itu tidak bisa dipakai
+menandatangani apa pun lagi. "Mulai bersama Windows" yang aktif ikut dipindah ke lokasi tetap.
+Tidak ada yang diunduh. Kalau Windows bertanya izin membaca notifikasi, pilih izinkan. Ulangi
+skrip ini hanya kalau isi folder `packaging` berubah.
+
+**Perbarui** setelah build baru (tanpa Administrator):
+
+```bash
+powershell -ExecutionPolicy Bypass -File "D:\Penyimpanan Utama\Documents\My mine\Notch Windows\packaging\update.ps1"
+```
+
+**Cabut** (sebagai Administrator): `packaging\uninstall.ps1`. Paket, sertifikat, autostart, dan
+notch.exe dihapus; data di `%APPDATA%\NotchWindows` tetap ada.
 
 ## Build dan jalankan
 
@@ -129,11 +201,11 @@ Build debug membuka jendela konsol berisi log. Untuk versi harian yang ringan ta
 cargo build --release
 ```
 
-Hasilnya `target\release\notch.exe`. `build.rs` menanam manifest Windows (`packaging\notch.exe.manifest`)
-ke exe; isinya penghubung ke paket untuk kabar pesan masuk, dan tidak berpengaruh apa-apa
-selama paketnya belum dipasang. Aktifkan "Mulai bersama Windows" dari menu tray
-setelah exe berada di lokasi permanennya, karena yang disimpan adalah path exe tersebut.
-Keluarkan notch lewat menu tray sebelum build ulang, karena exe yang sedang berjalan terkunci.
+Hasilnya `target\release\notch.exe`, lalu pasang atau perbarui dengan skrip di atas. `build.rs`
+menanam manifest Windows (`packaging\notch.exe.manifest`) ke exe; isinya penghubung ke paket untuk
+kabar pesan masuk, dan tidak berpengaruh apa-apa di luar lokasi pemasangan. Aktifkan "Mulai
+bersama Windows" dari notch yang terpasang, karena yang disimpan adalah path exe yang sedang
+berjalan.
 
 `cargo test` merender semua bentuk notch ke `target\preview\*.bmp` untuk dicek tanpa menjalankan aplikasi.
 
@@ -145,7 +217,7 @@ Keluarkan notch lewat menu tray sebelum build ulang, karena exe yang sedang berj
 | `src/app.rs` | Jendela, input mouse/keyboard, timer, loop pesan, perpindahan bentuk dan halaman |
 | `src/render/mod.rs` | Gambar notch dengan Direct2D (software) ke layered window, alat gambar dasar, ikon tray |
 | `src/render/pages.rs` | Tata letak pil, HUD, dan tiap halaman panel; area klik didaftarkan sambil menggambar |
-| `src/widgets/` | Data dan aturan shelf, pomodoro, minum air, dan tugas (diuji dengan `cargo test`) |
+| `src/widgets/` | Data dan aturan shelf, pomodoro, timer, minum air, tugas, serta urutan halaman (diuji dengan `cargo test`) |
 | `src/store.rs` | Simpan/muat file teks di `%APPDATA%\NotchWindows` |
 | `src/dragdrop.rs` | Seret file masuk/keluar, buka file, tampilkan di Explorer |
 | `src/thumbnail.rs` | Thumbnail file dari Windows, di thread terpisah |
@@ -153,27 +225,34 @@ Keluarkan notch lewat menu tray sebelum build ulang, karena exe yang sedang berj
 | `src/desktop.rs` | Deteksi full-screen dan jendela maximize lewat event Windows |
 | `src/services.rs` | Thread latar untuk layanan WinRT/COM, kabar ke jendela lewat channel |
 | `src/media.rs` | Sesi media Windows (SMTC), sampul album, perintah putar |
-| `src/audio.rs` | Perubahan volume perangkat output default |
+| `src/audio.rs` | Volume speaker dan bisu mikrofon default: pantau dan ubah |
+| `src/brightness.rs` | Atur kecerahan layar laptop lewat WMI |
 | `src/power.rs` | Charger, persen baterai, dan kecerahan layar |
 | `src/bluetooth.rs` | Perangkat Bluetooth tersambung/terputus dan baterainya |
 | `src/privacy.rs` | Aplikasi yang sedang memakai kamera (Media Foundation) dan mikrofon (Core Audio) |
 | `src/messages.rs` | Pesan masuk dari notifikasi aplikasi chat (butuh identitas paket) |
 | `src/sound.rs` | Bunyi notifikasi bawaan Windows, diam saat full-screen atau Jangan Ganggu |
 | `src/lyrics.rs` | Lirik tersinkron dari LRCLIB (opsional), pembaca format LRC |
-| `src/sysinfo.rs` | CPU, GPU, RAM, disk, dan jaringan |
-| `src/settings.rs` | Pengaturan (suara, lirik, kabar, pesan, tema) |
+| `src/weather.rs` | Cuaca dan pencarian kota dari Open-Meteo (opsional) |
+| `src/http.rs` | HTTPS GET lewat WinHTTP dengan pemeriksaan sertifikat penuh |
+| `src/sysinfo.rs` | CPU, GPU (beban dan suhu), RAM, disk, dan jaringan |
+| `src/folders.rs` | Pantau folder Screenshots dan Downloads untuk file baru yang selesai ditulis |
+| `src/network.rs` | Status Wi-Fi tersambung/terputus |
+| `src/settings.rs` | Pengaturan (suara, lirik, cuaca, mode rapat, kabar, pesan, pintasan, halaman, ukuran, tema) |
 | `src/tray.rs` | Ikon dan menu tray |
 | `src/autostart.rs` | Kunci `Run` di registry pengguna (tanpa admin) |
 | `src/clock.rs` | Jam, tanggal, durasi, dan lama menyala berbahasa Indonesia |
-| `build.rs`, `packaging/` | Manifest exe, paket sparse, dan skrip pasang/cabut kabar pesan |
+| `build.rs`, `packaging/` | Manifest exe, paket sparse, dan skrip pasang, perbarui, dan cabut |
 
 ## Target performa
 
 RAM saat diam di bawah 40 MB, CPU saat diam sekitar 0%, terbuka kurang dari 1 detik.
 Notch hanya menggambar saat ada yang bergerak; selebihnya proses tidur menunggu event.
 Saat musik diputar, gelombang di pil digambar ulang sekitar 12 kali per detik, tapi hanya
-kotak kecil di sekitar gelombangnya (sekitar 10 ms CPU per detik). Kedipan mata maskot juga
-hanya menggambar ulang area matanya.
+kotak kecil di sekitar gelombangnya (sekitar 10 ms CPU per detik). Kedipan dan lirikan mata
+maskot juga hanya menggambar ulang area matanya. Selama matanya terlihat, posisi kursor dilihat
+5 kali per detik (sekali per detik kalau kursor lama diam); pemantau folder dan Wi-Fi tidur
+sampai Windows mengabari ada perubahan.
 
 Build debug mencatat tiap menit jumlah frame animasi, callback hook, dan event layanan, untuk
 memeriksa kalau ada yang membangunkan proses terlalu sering.
