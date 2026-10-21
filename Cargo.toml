@@ -1,6 +1,6 @@
 [package]
 name = "notch"
-version = "0.10.0"
+version = "0.10.1"
 edition = "2024"
 description = "Notch ala MacBook untuk Windows: musik, kabar singkat, shelf file, dan widget kecil"
 license = "MIT"
