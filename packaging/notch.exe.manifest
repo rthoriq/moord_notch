@@ -6,7 +6,7 @@
   sehingga notifikasi pesan bisa dibaca.
 -->
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="0.7.0.0" name="NotchWindows.Notch" type="win32" processorArchitecture="amd64"/>
+  <assemblyIdentity version="0.10.0.0" name="NotchWindows.Notch" type="win32" processorArchitecture="amd64"/>
   <msix xmlns="urn:schemas-microsoft-com:msix.v1"
         publisher="CN=NotchWindows Pribadi"
         packageName="NotchWindows"

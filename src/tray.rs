@@ -33,6 +33,8 @@ const ID_SCREENSHOTS: usize = 12;
 const ID_BROWSER_MESSAGES: usize = 13;
 const ID_MEETING: usize = 14;
 const ID_WEATHER: usize = 15;
+const ID_COMPACT_HUD: usize = 16;
+const ID_CALENDAR: usize = 17;
 /// Pilihan berurutan mulai dari id ini.
 const ID_MESSAGES: usize = 50;
 const ID_PAGES: usize = 60;
@@ -60,6 +62,8 @@ pub enum Command {
     ToggleBrowserMessages,
     ToggleMeeting,
     ToggleWeather,
+    ToggleCompactHud,
+    ToggleCalendar,
     /// Tampilkan/sembunyikan halaman panel.
     TogglePage(Page),
     Messages(Messages),
@@ -182,6 +186,8 @@ pub fn show_menu(hwnd: HWND, state: MenuState) -> Option<Command> {
         };
         item(options, check(s.hotkey), ID_HOTKEY, hotkey);
         let _ = AppendMenuW(options, MF_SEPARATOR, 0, PCWSTR::null());
+        item(options, check(s.calendar), ID_CALENDAR, "Kalender di Beranda");
+        item(options, check(s.compact_hud), ID_COMPACT_HUD, "Kabar ringkas (gaya Dynamic Island)");
         item(options, check(s.lock_keys), ID_LOCK_KEYS, "Kabar Caps Lock / Num Lock");
         item(options, check(s.brightness), ID_BRIGHTNESS, "Kabar kecerahan layar");
         item(options, check(s.wifi), ID_WIFI, "Kabar Wi-Fi");
@@ -229,6 +235,8 @@ pub fn show_menu(hwnd: HWND, state: MenuState) -> Option<Command> {
             ID_BROWSER_MESSAGES => Some(Command::ToggleBrowserMessages),
             ID_MEETING => Some(Command::ToggleMeeting),
             ID_WEATHER => Some(Command::ToggleWeather),
+            ID_COMPACT_HUD => Some(Command::ToggleCompactHud),
+            ID_CALENDAR => Some(Command::ToggleCalendar),
             ID_EXIT => Some(Command::Exit),
             id if id >= ID_THEME => Theme::ALL.get(id - ID_THEME).map(|t| Command::Theme(*t)),
             id if id >= ID_SIZE => Size::ALL.get(id - ID_SIZE).map(|s| Command::Size(*s)),

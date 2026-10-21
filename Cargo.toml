@@ -1,6 +1,6 @@
 [package]
 name = "notch"
-version = "0.7.0"
+version = "0.10.0"
 edition = "2024"
 description = "Notch pribadi untuk Windows"
 publish = false
@@ -21,6 +21,7 @@ windows-future = "0.3.2"
 version = "0.62.2"
 features = [
     "ApplicationModel",
+    "ApplicationModel_DataTransfer",
     "Data_Json",
     "Devices_Enumeration",
     "Foundation",
@@ -28,6 +29,8 @@ features = [
     "Graphics_Imaging",
     "Media_Control",
     "Networking_Connectivity",
+    "Storage",
+    "Storage_Search",
     "UI_Notifications",
     "UI_Notifications_Management",
     "Storage_Streams",

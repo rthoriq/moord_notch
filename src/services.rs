@@ -47,6 +47,8 @@ pub enum Event {
     MessagesAccess(bool),
     Message(messages::Message),
     Network(network::State),
+    /// Unduhan yang sedang berjalan: jumlah file dan total byte; `None` = tidak ada lagi.
+    Downloading(Option<(usize, u64)>),
     /// File baru yang sudah selesai ditulis di folder Screenshots atau Downloads.
     Files { kind: folders::Kind, paths: Vec<std::path::PathBuf> },
     /// Hasil pencarian kota cuaca; `None` kalau tidak ditemukan atau gagal.

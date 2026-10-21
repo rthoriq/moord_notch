@@ -9,6 +9,20 @@ use crate::widgets::water::{GLASS_ML, liters};
 
 /// Jarak isi panel dari tepinya; sisanya untuk panah pindah halaman.
 const MARGIN: f32 = 32.0;
+/// Lebar kolom kiri (musik/jam) di Beranda lebar; kalender di kanannya.
+const HOME_LEFT: f32 = 356.0;
+/// Lebar kolom pemutar saat kolom lirik tampil; lirik mendapat sisanya.
+const LYRIC_LEFT: f32 = 300.0;
+/// Baris yang sedang dinyanyikan di kolom lirik, dan jarak antarbarisnya.
+const LYRIC_CENTER: f32 = 84.0;
+const LYRIC_GAP: f32 = 36.0;
+/// Jarak geser kolom kanan saat berganti antara kalender dan lirik.
+const COLUMN_SLIDE: f32 = 36.0;
+/// Pemutar musik: sampul, bar progres, dan baris tombol.
+const ART_TOP: f32 = 34.0;
+const ART_SIZE: f32 = 52.0;
+const PROGRESS_Y: f32 = 101.0;
+const CONTROLS_Y: f32 = 125.0;
 const HEADER_Y: f32 = 22.0;
 const ARROW_Y: f32 = 84.0;
 const DOTS_Y: f32 = 146.0;
@@ -16,7 +30,6 @@ const DOTS_Y: f32 = 146.0;
 const ROW_Y: f32 = 128.0;
 /// Jarak geser isi saat berpindah halaman.
 const PAGE_SLIDE: f32 = 28.0;
-const BUTTON_RADIUS: f32 = 17.0;
 
 impl Renderer {
     pub(super) fn draw_pill(&self, s: &Scene, x0: f32, x1: f32, h: f32, a: f32) {
@@ -35,20 +48,27 @@ impl Renderer {
         } else {
             self.eyes(x0 + 18.0, cy, 3.4, 9.0, 7.5, s.eyes, a);
         }
-        // Kanan: gelombang musik, atau sisa waktu timer/pomodoro; paling kanan titik privasi.
-        match (playing, timer, focus) {
-            (Some(m), _, _) => self.wave(x1 - 22.0, cy, s.seconds, accent(m.accent, p.text), a),
-            (None, Some(t), _) => {
+        // Kanan: gelombang musik, sisa waktu timer, unduhan yang berjalan, atau sisa menit
+        // pomodoro; paling kanan titik privasi. Pil melebar saat ada unduhan, jam bergeser ke kiri.
+        let download = s.download.filter(|_| playing.is_none() && timer.is_none());
+        match (playing, timer, download, focus) {
+            (Some(m), ..) => self.wave(x1 - 22.0, cy, s.seconds, accent(m.accent, p.text), a),
+            (None, Some(t), ..) => {
                 self.text(&t.short, &self.fonts.caption_end, rect(x1 - 52.0, 0.0, x1 - 13.0, h), ORANGE, a);
             }
-            (None, None, Some(f)) => {
+            (None, None, Some(size), _) => {
+                self.glyph(ICON_DOWNLOAD, &self.fonts.icon_11, x1 - 20.0, cy, p.accent, a);
+                self.text(size, &self.fonts.caption_end, rect(x1 - 100.0, 0.0, x1 - 31.0, h), p.soft, a);
+            }
+            (None, None, None, Some(f)) => {
                 let left = format!("{}m", f.minutes_left);
                 self.text(&left, &self.fonts.caption_end, rect(x1 - 52.0, 0.0, x1 - 13.0, h), phase_color(f.phase), a);
             }
-            (None, None, None) => {}
+            (None, None, None, None) => {}
         }
         self.privacy_dot(s.privacy, x1 - 8.0, cy, a);
-        self.text(s.time, &self.fonts.pill_time, rect(x0 + 34.0, 0.0, x1 - 34.0, h), p.text, a);
+        let time_right = if download.is_some() { x1 - 100.0 } else { x1 - 34.0 };
+        self.text(s.time, &self.fonts.pill_time, rect(x0 + 34.0, 0.0, time_right, h), p.text, a);
     }
 
     /// Pil lebar saat lirik aktif: sampul, baris lirik, dan gelombang.
@@ -69,7 +89,66 @@ impl Renderer {
         self.privacy_dot(s.privacy, x1 - 8.0, cy, a);
     }
 
-    pub(super) fn draw_hud(&self, hud: &Hud, x0: f32, x1: f32, a: f32) {
+    pub(super) fn draw_hud(&self, s: &Scene, hud: &Hud, x0: f32, x1: f32, h: f32, a: f32) {
+        // Isi kabar muncul sedikit membesar dari atas, seperti panel.
+        self.begin_zoom(0.9 + 0.1 * a, (x0 + x1) / 2.0);
+        if s.hud_compact {
+            self.draw_hud_compact(s, hud, x0, x1, h, a);
+        } else {
+            self.draw_hud_card(s, hud, x0, x1, a);
+        }
+        self.end_zoom();
+    }
+
+    /// Kabar ringkas setinggi pil: ikon dan nama di kiri, bilah/nilai di kanan.
+    fn draw_hud_compact(&self, s: &Scene, hud: &Hud, x0: f32, x1: f32, h: f32, a: f32) {
+        let p = &self.pal;
+        let cy = h / 2.0;
+        let row = |left: f32, right: f32| rect(left, cy - 9.0, right, cy + 9.0);
+        let value = row(x1 - 56.0, x1 - 14.0);
+        match hud {
+            Hud::Volume { level, muted } => {
+                let icon = if *muted { ICON_MUTE } else { volume_icon(*level) };
+                self.glyph(icon, &self.fonts.icon_13, x0 + 22.0, cy, p.text, a);
+                self.text("Volume", &self.fonts.label, row(x0 + 38.0, x1 - 140.0), p.text, a);
+                self.bar(x1 - 132.0, x1 - 62.0, cy, s.hud_fill, if *muted { p.muted } else { p.text }, a);
+                let text = hud_value(hud).unwrap_or_default();
+                self.rolling_text(&text, s.hud_roll, &self.fonts.label_end, value, p.text, a);
+            }
+            Hud::Brightness { .. } => {
+                self.glyph(ICON_BRIGHTNESS, &self.fonts.icon_13, x0 + 22.0, cy, p.text, a);
+                self.text("Kecerahan", &self.fonts.label, row(x0 + 38.0, x1 - 140.0), p.text, a);
+                self.bar(x1 - 132.0, x1 - 62.0, cy, s.hud_fill, p.text, a);
+                let text = hud_value(hud).unwrap_or_default();
+                self.rolling_text(&text, s.hud_roll, &self.fonts.label_end, value, p.text, a);
+            }
+            Hud::LockKey { caps, on } => {
+                let key = rect(x0 + 13.0, cy - 8.5, x0 + 31.0, cy + 8.5);
+                if *on {
+                    self.rounded(key, 4.5, p.accent, a);
+                } else {
+                    self.outline(key, 4.5, 1.2, false, p.muted, a);
+                }
+                self.text(if *caps { "A" } else { "1" }, &self.fonts.label_center, key, if *on { WHITE } else { p.muted }, a);
+                let name = if *caps { "Caps Lock" } else { "Num Lock" };
+                self.text(name, &self.fonts.label, row(x0 + 40.0, x1 - 70.0), p.text, a);
+                let state = if *on { "Nyala" } else { "Mati" };
+                self.text(state, &self.fonts.label_end, row(x1 - 70.0, x1 - 14.0), if *on { p.accent } else { p.muted }, a);
+            }
+            Hud::Power { plugged, percent, low } => {
+                let (icon, color, label) = power_look(*plugged, *percent, *low, p.text);
+                self.glyph(icon, &self.fonts.icon_16, x0 + 24.0, cy, color, a);
+                self.text(label, &self.fonts.label, row(x0 + 42.0, x1 - 60.0), p.text, a);
+                if let Some(percent) = percent {
+                    self.text(&format!("{percent}%"), &self.fonts.label_end, row(x1 - 60.0, x1 - 14.0), color, a);
+                }
+            }
+            // Kabar lain selalu memakai bentuk kartu.
+            _ => self.draw_hud_card(s, hud, x0, x1, a),
+        }
+    }
+
+    fn draw_hud_card(&self, s: &Scene, hud: &Hud, x0: f32, x1: f32, a: f32) {
         let p = &self.pal;
         let cy = 22.0;
         let row = |left: f32, right: f32| rect(left, cy - 10.0, right, cy + 10.0);
@@ -77,27 +156,12 @@ impl Renderer {
             Hud::Volume { level, muted } => {
                 let icon = if *muted { ICON_MUTE } else { volume_icon(*level) };
                 self.glyph(icon, &self.fonts.icon_16, x0 + 27.0, cy, p.text, a);
-                self.bar(x0 + 50.0, x1 - 62.0, cy, *level, if *muted { p.muted } else { p.text }, a);
-                let value = if *muted { "Senyap".to_string() } else { format!("{}", (level * 100.0).round()) };
-                self.text(&value, &self.fonts.label_end, row(x1 - 70.0, x1 - 20.0), p.text, a);
+                self.bar(x0 + 50.0, x1 - 62.0, cy, s.hud_fill, if *muted { p.muted } else { p.text }, a);
+                let value = hud_value(hud).unwrap_or_default();
+                self.rolling_text(&value, s.hud_roll, &self.fonts.label_end, row(x1 - 70.0, x1 - 20.0), p.text, a);
             }
             Hud::Power { plugged, percent, low } => {
-                let level = percent.map_or(10, |p| ((p + 5) / 10).min(10));
-                let base = if *plugged { ICON_BATTERY_CHARGING } else { ICON_BATTERY };
-                let icon = char::from_u32(base + level).unwrap_or(ICON_MUTE);
-                let color = if *low {
-                    RED
-                } else if *plugged {
-                    GREEN
-                } else {
-                    p.text
-                };
-                let label = match (*plugged, *low, *percent) {
-                    (_, true, _) => "Baterai lemah",
-                    (true, _, Some(100)) => "Baterai penuh",
-                    (true, _, _) => "Mengisi daya",
-                    (false, _, _) => "Memakai baterai",
-                };
+                let (icon, color, label) = power_look(*plugged, *percent, *low, p.text);
                 self.glyph(icon, &self.fonts.icon_20, x0 + 28.0, cy, color, a);
                 self.text(label, &self.fonts.label, row(x0 + 52.0, x1 - 80.0), p.text, a);
                 if let Some(percent) = percent {
@@ -149,10 +213,11 @@ impl Renderer {
                 self.text(label, &self.fonts.label, row(x0 + 50.0, x1 - 110.0), p.text, a);
                 self.text(app, &self.fonts.caption_end, row(x1 - 120.0, x1 - 20.0), p.muted, a);
             }
-            Hud::Brightness { level } => {
+            Hud::Brightness { .. } => {
                 self.glyph(ICON_BRIGHTNESS, &self.fonts.icon_16, x0 + 27.0, cy, p.text, a);
-                self.bar(x0 + 50.0, x1 - 62.0, cy, *level, p.text, a);
-                self.text(&format!("{}", (level * 100.0).round()), &self.fonts.label_end, row(x1 - 70.0, x1 - 20.0), p.text, a);
+                self.bar(x0 + 50.0, x1 - 62.0, cy, s.hud_fill, p.text, a);
+                let value = hud_value(hud).unwrap_or_default();
+                self.rolling_text(&value, s.hud_roll, &self.fonts.label_end, row(x1 - 70.0, x1 - 20.0), p.text, a);
             }
             Hud::LockKey { caps, on } => {
                 // Tutup tombol kecil berisi "A" (Caps Lock) atau "1" (Num Lock), menyala saat aktif.
@@ -199,6 +264,13 @@ impl Renderer {
                 };
                 self.text(status, &self.fonts.caption, rect(x0 + 50.0, 22.0, x1 - 20.0, 37.0), color, a);
             }
+            Hud::Agenda { text, time } => {
+                self.circle(x0 + 28.0, cy, 13.0, p.accent, a);
+                self.glyph(ICON_CALENDAR, &self.fonts.icon_13, x0 + 28.0, cy, WHITE, a);
+                self.text(text, &self.fonts.label, rect(x0 + 50.0, 6.0, x1 - 76.0, 22.0), p.text, a);
+                self.text("Agenda sekarang", &self.fonts.caption, rect(x0 + 50.0, 22.0, x1 - 20.0, 37.0), p.muted, a);
+                self.text(time, &self.fonts.label_end, rect(x1 - 76.0, 6.0, x1 - 20.0, 22.0), p.accent, a);
+            }
             Hud::Timer { minutes } => {
                 self.glyph(ICON_TIMER, &self.fonts.icon_16, x0 + 27.0, cy, ORANGE, a);
                 self.text("Timer selesai", &self.fonts.label, row(x0 + 50.0, x1 - 100.0), p.text, a);
@@ -208,7 +280,9 @@ impl Renderer {
     }
 
     pub(super) fn draw_panel(&self, s: &Scene, x0: f32, x1: f32, a: f32) {
-        // Isi panel sedikit turun saat muncul.
+        // Seperti di Mac: isi panel muncul membesar dari 80% dengan titik tumpu di atas, sambil
+        // sedikit turun.
+        self.begin_zoom(0.8 + 0.2 * a, (x0 + x1) / 2.0);
         let dy = (1.0 - a) * -6.0;
         match s.page_from {
             Some((from, t, dir)) => {
@@ -222,6 +296,7 @@ impl Renderer {
         if !s.locked {
             self.navigation(s, x0, x1, a, dy);
         }
+        self.end_zoom();
     }
 
     fn page(&self, s: &Scene, page: Page, x0: f32, x1: f32, a: f32, dx: f32, dy: f32) {
@@ -230,10 +305,7 @@ impl Renderer {
         }
         self.set_offset(dx, dy);
         match page {
-            Page::Home => match s.media {
-                Some(m) => self.media_page(s, m, x0, x1, a),
-                None => self.clock_page(s, x0, x1, a),
-            },
+            Page::Home => self.home_page(s, x0, x1, a, dx, dy),
             Page::Controls => self.controls_page(s, x0, x1, a),
             Page::Shelf => self.shelf_page(s, x0, x1, a),
             Page::Focus => self.focus_page(s, x0, x1, a),
@@ -243,6 +315,129 @@ impl Renderer {
             Page::System => self.system_page(s, x0, x1, a),
         }
         self.set_offset(0.0, 0.0);
+    }
+
+    /// Beranda: pemutar musik atau jam di kiri. Kolom kanan berisi kalender, atau lirik yang
+    /// bergeser masuk dari samping saat tombol lirik ditekan (kalender bergeser keluar). Tanpa
+    /// kalender, notch sendiri yang melebar untuk kolom lirik.
+    fn home_page(&self, s: &Scene, x0: f32, x1: f32, a: f32, dx: f32, dy: f32) {
+        let (l, r) = (x0 + MARGIN, x1 - MARGIN);
+        let mix = if s.lyrics.is_some() { s.lyric_mix.clamp(0.0, 1.0) } else { 0.0 };
+        let full = if s.calendar.is_some() { HOME_LEFT } else { r - l };
+        let right = l + lerp(full, LYRIC_LEFT, mix).min(r - l);
+        match s.media {
+            Some(m) => {
+                self.player_header(s, m, x0, x1, a);
+                self.media_page(s, m, l, right, a);
+            }
+            None => self.clock_page(s, l, right, a),
+        }
+        let divider = if s.calendar.is_some() { 1.0 } else { mix };
+        if divider > 0.01 && r - right > 40.0 {
+            self.rounded(rect(right + 11.0, 34.0, right + 12.0, 132.0), 0.5, self.tint(0.12), a * divider);
+        }
+        // Selama bergeser, isi kolom kanan tidak bisa diklik (letaknya belum tetap).
+        let recording = self.recording.get();
+        if mix > 0.0 && mix < 1.0 {
+            self.recording.set(false);
+        }
+        self.push_clip(rect(right + 12.0, 0.0, r + 8.0, View::PanelWide.size().1));
+        let (cl, cr) = (right + 24.0, r);
+        // Kalender bergeser keluar dulu, baru lirik masuk; tanpa kalender, lirik masuk sambil
+        // notch melebar.
+        let leave = (mix * 2.0).min(1.0);
+        let enter = if s.calendar.is_some() { (mix * 2.0 - 1.0).max(0.0) } else { mix };
+        if let Some(cal) = s.calendar
+            && leave < 0.999
+        {
+            self.set_offset(dx + COLUMN_SLIDE * leave, dy);
+            self.calendar(s, cal, cl, cr, a * (1.0 - leave));
+        }
+        if let Some(lyrics) = s.lyrics
+            && enter > 0.001
+        {
+            self.set_offset(dx + COLUMN_SLIDE * (1.0 - enter), dy);
+            // Ditata selebar kolom akhirnya dan hanya terpotong selama notch masih melebar, supaya
+            // barisnya tidak dibungkus ulang tiap frame.
+            let width = View::PanelWide.size().0 - 2.0 * MARGIN - LYRIC_LEFT - 24.0;
+            self.lyrics_column(lyrics, cl, cr.max(cl + width), a * enter);
+        }
+        self.set_offset(dx, dy);
+        self.pop_clip();
+        self.recording.set(recording);
+    }
+
+    /// Kepala pemutar: tanggal dan jam di tengah dengan cincin baterai, cuaca di kiri, dan
+    /// gelombang musik di kanan.
+    fn player_header(&self, s: &Scene, m: &MediaView, x0: f32, x1: f32, a: f32) {
+        let p = &self.pal;
+        let (l, r) = (x0 + MARGIN, x1 - MARGIN);
+        let date_w = self.text_width(s.day, &self.fonts.caption);
+        let time_w = self.text_width(s.time, &self.fonts.label);
+        let ring = if s.battery.is_some() { 18.0 } else { 0.0 };
+        let total = ring + date_w + 6.0 + time_w;
+        let start = (x0 + x1) / 2.0 - total / 2.0;
+        let mut x = start;
+        if let Some((percent, plugged)) = s.battery {
+            self.battery_ring(percent, plugged, x + 5.5, a);
+            x += ring;
+        }
+        self.text(s.day, &self.fonts.caption, rect(x, HEADER_Y - 8.0, x + date_w + 2.0, HEADER_Y + 8.0), p.soft, a);
+        x += date_w + 6.0;
+        self.text(s.time, &self.fonts.label, rect(x, HEADER_Y - 9.0, x + time_w + 2.0, HEADER_Y + 9.0), p.text, a);
+        if let Some(weather) = s.weather {
+            self.text(weather, &self.fonts.caption, rect(l, HEADER_Y - 8.0, start - 12.0, HEADER_Y + 8.0), p.muted, a);
+        }
+        if m.playing {
+            self.wave(r - 8.0, HEADER_Y, s.seconds, accent(m.accent, p.text), a);
+        }
+    }
+
+    /// Cincin baterai kecil di kepala halaman: hijau saat mengisi, merah saat hampir habis.
+    fn battery_ring(&self, percent: u32, plugged: bool, cx: f32, a: f32) {
+        let color = if plugged {
+            GREEN
+        } else if percent <= 20 {
+            RED
+        } else {
+            self.pal.soft
+        };
+        self.ring(cx, HEADER_Y, 5.0, 2.0, percent as f32 / 100.0, color, a);
+    }
+
+    /// Gambar ulang hanya gelombang musik di kepala pemutar, pada panel selebar `w` yang sedang
+    /// diam. Mengembalikan area (piksel) yang berubah untuk [`Renderer::present`].
+    pub fn draw_header_wave(&self, w: f32, seconds: f64, color: Option<u32>) -> Result<RECT> {
+        let (cx, cy) = (CANVAS.0 / 2.0 + w / 2.0 - MARGIN - 8.0, HEADER_Y);
+        self.patch(cx, cy, 10.0, 8.0, || self.wave(cx, cy, seconds, accent(color, self.pal.text), 1.0))
+    }
+
+    /// Kolom lirik: baris yang sedang dinyanyikan terang di tengah, baris sebelum dan sesudahnya
+    /// redup. Saat baris berganti, semuanya bergulir naik satu baris.
+    fn lyrics_column(&self, lyrics: &LyricsView, l: f32, r: f32, a: f32) {
+        let p = &self.pal;
+        if let Some(status) = lyrics.status {
+            self.glyph(ICON_MUSIC, &self.fonts.icon_16, l + 8.0, LYRIC_CENTER, p.muted, a);
+            self.text(status, &self.fonts.body, rect(l + 26.0, LYRIC_CENTER - 10.0, r, LYRIC_CENTER + 10.0), p.muted, a);
+            return;
+        }
+        let eased = 1.0 - (1.0 - lyrics.scroll.clamp(0.0, 1.0)).powi(3);
+        // Baris yang bergulir keluar tidak boleh menimpa kepala pemutar atau titik halaman.
+        self.push_clip(rect(l, 32.0, r, 142.0));
+        for (i, line) in lyrics.lines.iter().enumerate() {
+            // Posisi terhadap baris tengah; selama bergulir, semuanya masih sedikit lebih rendah.
+            let pos = i as f32 - 2.0 + (1.0 - eased);
+            let visible = ((1.6 - pos.abs()) / 0.6).clamp(0.0, 1.0);
+            if line.is_empty() || visible < 0.01 {
+                continue;
+            }
+            let focus = (1.0 - pos.abs()).clamp(0.0, 1.0);
+            let y = LYRIC_CENTER + pos * LYRIC_GAP;
+            let color = blend(p.muted, p.text, focus);
+            // Setinggi dua baris: baris yang panjang dibungkus, sisanya dipotong "…".
+            self.text(line, &self.fonts.lyric_line, rect(l, y - 19.0, r, y + 19.0), color, a * visible);
+        }
+        self.pop_clip();
     }
 
     /// Panah kiri/kanan dan titik penanda halaman yang tampil.
@@ -280,9 +475,9 @@ impl Renderer {
         let p = &self.pal;
         let (l, r) = (x0 + MARGIN, x1 - MARGIN);
         if let Some(icon) = icon {
-            self.glyph(icon, &self.fonts.icon_13, l + 6.0, HEADER_Y, p.soft, a);
+            self.glyph(icon, &self.fonts.icon_13, l + 6.0, HEADER_Y, p.muted, a);
         }
-        self.text(title, &self.fonts.header, rect(l + 18.0, HEADER_Y - 9.0, r - 180.0, HEADER_Y + 9.0), p.soft, a);
+        self.text(title, &self.fonts.header, rect(l + 18.0, HEADER_Y - 9.0, r - 180.0, HEADER_Y + 9.0), p.text, a);
         let color = match right_hit {
             Some(hit) if s.hovered == Some(hit) => p.text,
             Some(_) => p.soft,
@@ -295,16 +490,123 @@ impl Renderer {
         }
     }
 
-    fn clock_page(&self, s: &Scene, x0: f32, x1: f32, a: f32) {
+    /// Jam di Beranda, di antara `l` dan `r`.
+    fn clock_page(&self, s: &Scene, l: f32, r: f32, a: f32) {
         let p = &self.pal;
-        let (l, r) = (x0 + MARGIN, x1 - MARGIN);
         self.text(s.greeting, &self.fonts.greeting, rect(l, 34.0, r - 90.0, 52.0), p.muted, a);
         self.text(s.time, &self.fonts.big_time, rect(l - 2.0, 50.0, r - 90.0, 102.0), p.text, a);
         self.text(s.date, &self.fonts.date, rect(l, 98.0, r - 90.0, 116.0), p.soft, a);
         self.eyes(r - 40.0, 76.0, 13.0, 30.0, 25.0, s.eyes, a);
-        if let Some(weather) = s.weather {
-            self.text(weather, &self.fonts.caption_end, rect(r - 260.0, HEADER_Y - 8.0, r, HEADER_Y + 8.0), p.muted, a);
+        // Kepala seperti di pemutar: cuaca di kiri, baterai di kanan. Di Beranda lebar keduanya
+        // tampil di kepala kolom kalender.
+        if s.calendar.is_some() {
+            return;
         }
+        if let Some(weather) = s.weather {
+            self.text(weather, &self.fonts.caption, rect(l, HEADER_Y - 8.0, r - 80.0, HEADER_Y + 8.0), p.muted, a);
+        }
+        if let Some((percent, plugged)) = s.battery {
+            self.battery_ring(percent, plugged, r - 6.0, a);
+            self.text(&format!("{percent}%"), &self.fonts.caption_end, rect(r - 70.0, HEADER_Y - 8.0, r - 16.0, HEADER_Y + 8.0), p.soft, a);
+        }
+    }
+
+    /// Kolom kalender: bulan, lima hari bergeser, agenda hari terpilih, dan kotak tambah agenda.
+    fn calendar(&self, s: &Scene, cal: &CalendarView, l: f32, r: f32, a: f32) {
+        let p = &self.pal;
+        // Kepala: cuaca dan baterai di kanan, kecuali saat musik diputar (sudah ada di kepala
+        // pemutar).
+        let mut right = r;
+        if let Some((percent, plugged)) = s.battery.filter(|_| s.media.is_none()) {
+            self.battery_ring(percent, plugged, right - 6.0, a);
+            self.text(&format!("{percent}%"), &self.fonts.caption_end, rect(right - 70.0, HEADER_Y - 8.0, right - 16.0, HEADER_Y + 8.0), p.soft, a);
+            right -= 76.0;
+        }
+        if let Some(weather) = s.weather.filter(|_| s.media.is_none()) {
+            self.text(weather, &self.fonts.caption_end, rect(l, HEADER_Y - 8.0, right, HEADER_Y + 8.0), p.muted, a);
+        }
+
+        self.text(&cal.month, &self.fonts.title, rect(l, 38.0, l + 46.0, 58.0), p.text, a);
+        self.text(&cal.year, &self.fonts.caption, rect(l, 58.0, l + 46.0, 72.0), p.muted, a);
+        let strip = l + 46.0;
+        let col = (r - strip) / cal.days.len().max(1) as f32;
+        self.hit(rect(strip, 34.0, r, 84.0), Hit::CalendarStrip);
+        for (i, day) in cal.days.iter().enumerate() {
+            let cx = strip + col * (i as f32 + 0.5);
+            let hit = Hit::CalendarDay(day.offset);
+            let name = if day.today { p.accent } else { p.muted };
+            self.text(day.name, &self.fonts.caption_center, rect(cx - col / 2.0, 36.0, cx + col / 2.0, 50.0), name, a);
+            let (fill, color) = if day.today {
+                (Some(p.accent), WHITE)
+            } else if day.selected {
+                (Some(self.tint(0.18)), p.text)
+            } else if s.hovered == Some(hit) {
+                (Some(self.tint(0.08)), p.text)
+            } else {
+                (None, p.soft)
+            };
+            if let Some(fill) = fill {
+                self.circle(cx, 63.0, 12.0, fill, a);
+            }
+            if day.today && day.selected {
+                self.circle_outline(cx, 63.0, 14.5, 1.2, with_alpha(p.accent, 0.5), a);
+            }
+            self.text(&day.number.to_string(), &self.fonts.label_center, rect(cx - 14.0, 53.0, cx + 14.0, 73.0), color, a);
+            if day.has_events {
+                self.circle(cx, 80.0, 2.0, if day.today { p.accent } else { p.muted }, a);
+            }
+            self.hit(rect(cx - col / 2.0, 34.0, cx + col / 2.0, 84.0), hit);
+        }
+
+        // Agenda hari terpilih.
+        self.hit(rect(l - 4.0, 85.0, r + 4.0, 116.0), Hit::AgendaList);
+        if cal.events.is_empty() {
+            self.text("Tidak ada agenda", &self.fonts.caption, rect(l, 92.0, r, 108.0), p.muted, a);
+        }
+        for (row, item) in cal.events.iter().skip(cal.scroll).take(crate::widgets::agenda::VISIBLE).enumerate() {
+            let y = 92.0 + row as f32 * 16.0;
+            let hovered = matches!(s.hovered, Some(Hit::AgendaRow(id) | Hit::AgendaToggle(id) | Hit::AgendaRemove(id)) if id == item.id);
+            // Seluruh baris menyalakan sorotan; lingkaran dan × dicatat sesudahnya supaya menang.
+            self.hit(rect(l - 4.0, y - 8.0, r + 4.0, y + 8.0), Hit::AgendaRow(item.id));
+            let bx = l + 6.0;
+            if item.done {
+                self.circle(bx, y, 6.0, p.accent, a);
+                self.glyph(ICON_CHECK, &self.fonts.icon_9, bx, y, WHITE, a);
+            } else {
+                self.circle_outline(bx, y, 5.5, 1.4, if hovered { p.text } else { p.accent }, a);
+            }
+            self.hit(rect(bx - 9.0, y - 8.0, bx + 9.0, y + 8.0), Hit::AgendaToggle(item.id));
+            let area = rect(l + 18.0, y - 8.0, r - 44.0, y + 8.0);
+            if item.done {
+                self.text_struck(&item.text, &self.fonts.caption, area, p.muted, a);
+            } else {
+                self.text(&item.text, &self.fonts.caption, area, p.text, a);
+            }
+            if hovered {
+                let over = s.hovered == Some(Hit::AgendaRemove(item.id));
+                self.glyph(ICON_CLOSE, &self.fonts.icon_9, r - 8.0, y, if over { RED } else { p.muted }, a);
+                self.hit(rect(r - 20.0, y - 8.0, r + 4.0, y + 8.0), Hit::AgendaRemove(item.id));
+            } else {
+                self.text(&item.time, &self.fonts.caption_end, rect(r - 44.0, y - 8.0, r, y + 8.0), p.muted, a);
+            }
+        }
+
+        // Kotak tambah agenda; jumlah agenda yang tidak muat ditulis di ujung kanannya.
+        let input = rect(l, ROW_Y - 10.0, r, ROW_Y + 10.0);
+        let over = s.hovered == Some(Hit::AgendaInput);
+        match s.agenda_draft {
+            Some(draft) => self.typing_box(input, draft, "09.00 Rapat, Enter", a),
+            None => {
+                self.rounded(input, 10.0, self.tint(if over { 0.10 } else { 0.07 }), a);
+                let inner = rect(input.left + 10.0, input.top, input.right - 10.0, input.bottom);
+                self.text("+  Tambah agenda", &self.fonts.caption, inner, if over { p.soft } else { p.muted }, a);
+                let hidden = cal.events.len().saturating_sub(cal.scroll + crate::widgets::agenda::VISIBLE);
+                if hidden > 0 {
+                    self.text(&format!("{hidden} lagi"), &self.fonts.caption_end, inner, p.muted, a);
+                }
+            }
+        }
+        self.hit(input, Hit::AgendaInput);
     }
 
     /// Volume, kecerahan, mikrofon, senyap, dan kota cuaca.
@@ -380,9 +682,9 @@ impl Renderer {
             self.text("tidak tersedia", &self.fonts.caption, rect(start, y - 8.0, r, y + 8.0), p.muted, a);
             return;
         };
-        self.bar(start, end, y, value, color, a);
-        let knob = start + (end - start) * value.clamp(0.0, 1.0);
-        self.circle(knob, y, if s.hovered == Some(hit) { 7.0 } else { 6.0 }, p.text, a);
+        // Seperti bar lagu: tanpa kenop, menebal saat disorot atau diseret.
+        let thick = if s.hovered == Some(hit) { 10.0 } else { 6.0 };
+        self.bar_sized(start, end, y, thick, value, color, a);
         self.text(label, &self.fonts.label_end, rect(r - 46.0, y - 10.0, r, y + 10.0), p.text, a);
         // Area klik selebar jalurnya persis, supaya posisi klik = nilai.
         self.hit(rect(start, y - 13.0, end, y + 13.0), hit);
@@ -452,37 +754,47 @@ impl Renderer {
         self.pop_clip();
     }
 
-    fn media_page(&self, s: &Scene, m: &MediaView, x0: f32, x1: f32, a: f32) {
+    /// Pemutar musik di Beranda, di antara `l` dan `r`: sampul, judul, dan artis di atas; bar
+    /// progres di tengah; tombol lirik dan tombol putar di bawah.
+    fn media_page(&self, s: &Scene, m: &MediaView, l: f32, r: f32, a: f32) {
         let p = &self.pal;
-        let (l, r) = (x0 + MARGIN, x1 - MARGIN);
-        let tint = accent(m.accent, p.text);
-
-        // Kepala: aplikasi pemutar di kiri, jam di kanan.
-        self.glyph(ICON_MUSIC, &self.fonts.icon_13, l + 6.0, HEADER_Y, accent(m.accent, p.muted), a);
-        self.text(&m.source, &self.fonts.header, rect(l + 18.0, HEADER_Y - 9.0, r - 120.0, HEADER_Y + 9.0), p.muted, a);
-        self.text(s.time, &self.fonts.caption_end, rect(r - 120.0, HEADER_Y - 8.0, r, HEADER_Y + 8.0), p.soft, a);
-
-        // Sampul, judul, artis, dan baris lirik kalau ada. Tanpa artis (misal video), judul
-        // diletakkan di tengah sampul.
-        self.art(l, 38.0, 64.0, 12.0, a);
-        let (title_y, artist_y) = match (m.artist.is_empty(), s.lyric.is_some()) {
-            (true, false) => (70.0, 0.0),
-            (true, true) => (56.0, 0.0),
-            (false, false) => (59.0, 80.0),
-            (false, true) => (50.0, 69.0),
-        };
-        self.text(&m.title, &self.fonts.title, rect(l + 78.0, title_y - 10.0, r - 118.0, title_y + 10.0), p.text, a);
+        // Tanpa artis (misal video), judul diletakkan di tengah sampul.
+        self.art(l, ART_TOP, ART_SIZE, 11.0, a);
+        let text_l = l + ART_SIZE + 12.0;
+        let (title_y, artist_y) = if m.artist.is_empty() { (ART_TOP + ART_SIZE / 2.0, 0.0) } else { (51.0, 70.0) };
+        self.text(&m.title, &self.fonts.title, rect(text_l, title_y - 10.0, r, title_y + 10.0), p.text, a);
         if !m.artist.is_empty() {
-            self.text(&m.artist, &self.fonts.body, rect(l + 78.0, artist_y - 9.0, r - 118.0, artist_y + 9.0), p.muted, a);
-        }
-        if let Some(line) = s.lyric {
-            // Sampai dua baris; baris yang lebih panjang lagi dipotong "…".
-            self.text(line, &self.fonts.lyric_block, rect(l + 78.0, 80.0, r, 112.0), tint, a);
+            self.text(&m.artist, &self.fonts.body, rect(text_l, artist_y - 9.0, r, artist_y + 9.0), p.muted, a);
         }
 
-        // Tombol putar.
-        for (button, offset) in [(Button::Previous, 100.0), (Button::PlayPause, 60.0), (Button::Next, 20.0)] {
-            let (bx, by) = (r - offset, if s.lyric.is_some() { 62.0 } else { 70.0 });
+        // Waktu berjalan, bar, dan sisa waktu. Bar menebal saat disorot kalau bisa diseret.
+        if let Some(progress) = m.progress {
+            let y = PROGRESS_Y;
+            self.text(&m.elapsed, &self.fonts.caption, rect(l, y - 8.0, l + 40.0, y + 8.0), p.soft, a);
+            self.text(&m.remaining, &self.fonts.caption_end, rect(r - 44.0, y - 8.0, r, y + 8.0), p.soft, a);
+            let (start, end) = (l + 42.0, r - 48.0);
+            let active = m.can_seek && (m.seeking || s.hovered == Some(Hit::MediaSeek));
+            self.bar_sized(start, end, y, if active { 7.0 } else { 4.0 }, progress, p.text, a);
+            if m.can_seek {
+                // Area klik selebar bar persis, supaya posisi klik = posisi lagu.
+                self.hit(rect(start, y - 9.0, end, y + 9.0), Hit::MediaSeek);
+            }
+        }
+
+        // Tombol lirik di kiri (di bawah waktu berjalan), tombol putar di tengah.
+        let y = CONTROLS_Y;
+        if let Some(on) = s.lyrics_button {
+            let (bx, hit) = (l + 10.0, Hit::LyricsToggle);
+            let over = s.hovered == Some(hit);
+            if on || over {
+                self.circle(bx, y, 14.0, self.tint(if on { 0.16 } else { 0.10 }), a);
+            }
+            let icon = if on { ICON_LYRICS_ON } else { ICON_LYRICS };
+            self.glyph(icon, &self.fonts.icon_13, bx, y + 0.5, if on || over { p.text } else { p.muted }, a);
+            self.hit(rect(bx - 14.0, y - 14.0, bx + 14.0, y + 14.0), hit);
+        }
+        let cx = (l + r) / 2.0;
+        for (button, bx) in [(Button::Previous, cx - 48.0), (Button::PlayPause, cx), (Button::Next, cx + 48.0)] {
             let enabled = match button {
                 Button::Previous => m.can_previous,
                 Button::Next => m.can_next,
@@ -490,25 +802,17 @@ impl Renderer {
             };
             let hit = Hit::Media(button);
             if enabled && s.hovered == Some(hit) {
-                self.circle(bx, by, BUTTON_RADIUS, self.tint(0.14), a);
+                self.circle(bx, y, 16.0, self.tint(0.14), a);
             }
             let (icon, font) = match button {
                 Button::Previous => (ICON_PREVIOUS, &self.fonts.icon_16),
                 Button::Next => (ICON_NEXT, &self.fonts.icon_16),
-                Button::PlayPause => (if m.playing { ICON_PAUSE } else { ICON_PLAY }, &self.fonts.icon_22),
+                Button::PlayPause => (if m.playing { ICON_PAUSE } else { ICON_PLAY }, &self.fonts.icon_20),
             };
-            self.glyph(icon, font, bx, by, if enabled { p.text } else { p.dim }, a);
+            self.glyph(icon, font, bx, y, if enabled { p.text } else { p.dim }, a);
             if enabled {
-                self.hit(rect(bx - BUTTON_RADIUS, by - BUTTON_RADIUS, bx + BUTTON_RADIUS, by + BUTTON_RADIUS), hit);
+                self.hit(rect(bx - 16.0, y - 16.0, bx + 16.0, y + 16.0), hit);
             }
-        }
-
-        // Progres.
-        if let Some(progress) = m.progress {
-            let cy = 124.0;
-            self.text(&m.elapsed, &self.fonts.caption, rect(l, cy - 8.0, l + 40.0, cy + 8.0), p.soft, a);
-            self.bar(l + 44.0, r - 44.0, cy, progress, tint, a);
-            self.text(&m.remaining, &self.fonts.caption_end, rect(r - 40.0, cy - 8.0, r, cy + 8.0), p.soft, a);
         }
     }
 
@@ -530,18 +834,13 @@ impl Renderer {
 
         let strip = rect(l, 38.0, r, 118.0);
         self.hit(strip, Hit::ShelfStrip);
-        if count == 0 {
-            let (border, text) = if shelf.drop_hover {
-                self.rounded(strip, 12.0, with_alpha(p.accent, 0.15), a);
-                (p.accent, "Lepaskan untuk menyimpan di shelf")
-            } else {
-                (p.dim, "Seret file ke notch untuk disimpan sementara")
-            };
-            self.outline(strip, 12.0, 1.2, true, border, a);
-            let cx = (l + r) / 2.0;
-            let color = if shelf.drop_hover { p.text } else { p.muted };
-            self.glyph(ICON_FOLDER, &self.fonts.icon_20, cx, 66.0, color, a);
-            self.text(text, &self.fonts.caption_center, rect(l, 86.0, r, 102.0), color, a);
+        let fx = s.shelf_fx;
+        if count == 0 && !shelf.drop_hover {
+            self.outline(strip, 12.0, 1.2, true, p.dim, a);
+            self.glyph(ICON_DOWNLOAD, &self.fonts.icon_20, (l + r) / 2.0, 66.0, p.muted, a);
+            let text = "Seret file ke notch untuk disimpan sementara";
+            self.text(text, &self.fonts.caption_center, rect(l, 86.0, r, 102.0), p.muted, a);
+            self.drop_glow(strip, fx, a);
             return;
         }
 
@@ -549,11 +848,17 @@ impl Renderer {
             let tx = l + slot as f32 * 76.0;
             let tile = rect(tx, 38.0, tx + 68.0, 118.0);
             let hovered = matches!(s.hovered, Some(Hit::ShelfItem(id) | Hit::ShelfRemove(id)) if id == item.id);
-            if hovered {
-                self.rounded(tile, 10.0, self.tint(0.08), a);
-            }
-            self.thumb(item.id, item.is_dir, tx + 34.0, 44.0, 48.0, a);
-            self.text(&item.name, &self.fonts.caption_center, rect(tx + 3.0, 96.0, tx + 65.0, 112.0), p.soft, a);
+            // Ubin baru muncul membesar, ubin yang dihapus mengecil lalu hilang, ubin yang
+            // disorot membesar 5%.
+            let (grow, fade) = fx.tiles.get(&item.id).copied().unwrap_or((1.0, 1.0));
+            let ta = a * fade;
+            self.scaled(tx + 34.0, 78.0, grow * if hovered { 1.05 } else { 1.0 }, || {
+                if hovered {
+                    self.rounded(tile, 10.0, self.tint(0.08), ta);
+                }
+                self.thumb(item.id, item.is_dir, tx + 34.0, 44.0, 48.0, ta);
+                self.text(&item.name, &self.fonts.caption_center, rect(tx + 3.0, 96.0, tx + 65.0, 112.0), p.soft, ta);
+            });
             self.hit(tile, Hit::ShelfItem(item.id));
             if hovered {
                 let (bx, by) = (tx + 60.0, 45.0);
@@ -564,13 +869,52 @@ impl Renderer {
             }
         }
         if shelf.drop_hover {
-            self.rounded(strip, 12.0, with_alpha(p.accent, 0.22), a);
-            self.outline(strip, 12.0, 1.2, true, p.accent, a);
-            self.text("Lepaskan untuk menambahkan", &self.fonts.label_center, strip, p.text, a);
+            self.drop_zone(s, strip, count > 0, a);
         } else {
             let hint = "Klik 2x buka · klik kanan lihat di folder · seret keluar";
             self.text(hint, &self.fonts.caption_center, rect(l, ROW_Y - 8.0, r, ROW_Y + 8.0), p.muted, a);
         }
+        self.drop_glow(strip, fx, a);
+    }
+
+    /// Area lepas selama file diseret ke notch: garis putus-putus yang berjalan, menyala warna
+    /// aksen saat file tepat di atasnya, dengan ikon yang mengangguk mengajak dilepas.
+    fn drop_zone(&self, s: &Scene, area: D2D_RECT_F, adding: bool, a: f32) {
+        let p = &self.pal;
+        let fx = s.shelf_fx;
+        if adding {
+            // Ubin yang sudah ada diredupkan supaya tulisan ajakan terbaca.
+            self.rounded(area, 12.0, with_alpha(p.body, 0.85), a);
+        }
+        // Dua zona seperti NotchNook: simpan di shelf (kiri) atau bagikan (kanan).
+        let shelf = rect(area.left, area.top, area.right - 120.0, area.bottom);
+        let share = rect(area.right - 112.0, area.top, area.right, area.bottom);
+        let text = if adding { "Lepaskan untuk menambahkan" } else { "Lepaskan untuk menyimpan di shelf" };
+        self.drop_target(s, shelf, fx.targeted, ICON_DOWNLOAD, text, a);
+        self.drop_target(s, share, fx.share_targeted, ICON_SHARE, "Bagikan", a);
+        self.hit(share, Hit::DropShare);
+    }
+
+    /// Satu zona lepas: garis putus-putus berjalan, menyala dan ikonnya mengangguk saat file
+    /// tepat di atasnya.
+    fn drop_target(&self, s: &Scene, area: D2D_RECT_F, targeted: bool, icon: char, text: &str, a: f32) {
+        let p = &self.pal;
+        let (fill, line) = if targeted { (0.22, 1.0) } else { (0.08, 0.55) };
+        self.rounded(area, 12.0, with_alpha(p.accent, fill), a);
+        self.marching(area, 12.0, 2.0, s.shelf_fx.dash, with_alpha(p.accent, line), a);
+        let bob = if targeted { (s.seconds * 7.0).sin() as f32 * 2.5 } else { 0.0 };
+        let color = if targeted { p.text } else { p.soft };
+        self.glyph(icon, &self.fonts.icon_20, (area.left + area.right) / 2.0, 66.0 + bob, color, a);
+        self.text(text, &self.fonts.caption_center, rect(area.left + 4.0, 86.0, area.right - 4.0, 102.0), color, a);
+    }
+
+    /// Pendaran singkat sesudah file dilepas: cincin aksen yang melebar sambil memudar.
+    fn drop_glow(&self, area: D2D_RECT_F, fx: &ShelfFx, a: f32) {
+        let Some(t) = fx.glow else { return };
+        let (fade, grow) = (1.0 - t, 3.0 * t);
+        let ring = rect(area.left - grow, area.top - grow, area.right + grow, area.bottom + grow);
+        self.rounded(area, 12.0, with_alpha(self.pal.accent, 0.16 * fade), a);
+        self.outline(ring, 12.0 + grow, 2.0, false, with_alpha(self.pal.accent, fade), a);
     }
 
     fn focus_page(&self, s: &Scene, x0: f32, x1: f32, a: f32) {
@@ -797,4 +1141,25 @@ impl Renderer {
 /// Ikon speaker sesuai tingkat volume.
 fn volume_icon(level: f32) -> char {
     if level < 0.005 { ICON_VOLUME[0] } else { ICON_VOLUME[((level * 3.0).ceil() as usize).clamp(1, 3)] }
+}
+
+/// Ikon baterai, warnanya, dan tulisan untuk kabar daya.
+fn power_look(plugged: bool, percent: Option<u32>, low: bool, normal: D2D1_COLOR_F) -> (char, D2D1_COLOR_F, &'static str) {
+    let level = percent.map_or(10, |p| ((p + 5) / 10).min(10));
+    let base = if plugged { ICON_BATTERY_CHARGING } else { ICON_BATTERY };
+    let icon = char::from_u32(base + level).unwrap_or(ICON_MUTE);
+    let color = if low {
+        RED
+    } else if plugged {
+        GREEN
+    } else {
+        normal
+    };
+    let label = match (plugged, low, percent) {
+        (_, true, _) => "Baterai lemah",
+        (true, _, Some(100)) => "Baterai penuh",
+        (true, _, _) => "Mengisi daya",
+        (false, _, _) => "Memakai baterai",
+    };
+    (icon, color, label)
 }

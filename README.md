@@ -64,8 +64,8 @@ Data disimpan sebagai file teks biasa di `%APPDATA%\NotchWindows`: `shelf.txt`, 
   tersinkron diambil dari [LRCLIB](https://lrclib.net) lewat HTTPS. Yang dikirim hanya judul,
   artis, album, dan durasi lagu yang sedang diputar; hasilnya hanya disimpan di memori. Selama
   lagu diputar, pil menampilkan baris yang sedang dinyanyikan dan lebarnya menyesuaikan panjang
-  baris; baris yang terlalu panjang dibagi jadi dua baris. Halaman musik juga menampilkan baris
-  lirik (sampai dua baris).
+  baris; baris yang terlalu panjang dibagi jadi dua baris. Di panel, lirik tampil di kolom lirik
+  (lihat Tahap 9).
 - **Sistem**: halaman keenam berisi beban CPU, GPU, RAM, dan disk C: (warnanya berubah oranye di
   atas 60% dan merah di atas 85%), kecepatan jaringan, lama laptop menyala, dan aplikasi yang
   sedang memakai kamera/mikrofon. CPU dan GPU memakai angka yang sama dengan Task Manager.
@@ -160,6 +160,70 @@ notifikasi beserta cara notch memilahnya. Isi pesan dan nama pengirim tidak ikut
   berbagi layar), kabar pesan hanya berbunyi "Pesan baru" tanpa pengirim dan isinya, dan notch
   tidak berbunyi (bisa terdengar peserta lain), kecuali kabar bahwa kamera/mikrofon baru dinyalakan.
 
+## Tahap 7: tampilan ala notch Mac
+
+Mengikuti aplikasi notch populer di Mac (Boring Notch, NotchDrop, NotchNook):
+
+- **Seret file**: begitu file masuk ke notch, panel langsung terbuka memantul ke halaman Shelf
+  dengan area lepas bergaris putus-putus yang berjalan. Saat file tepat di atasnya, area itu
+  menyala warna aksen dan ikonnya mengangguk. Sesudah dilepas, area lepas berpendar sekali dan
+  ubin baru muncul membesar; ubin yang dihapus mengecil lalu hilang, ubin yang disorot membesar 5%.
+- **Buka/tutup**: membuka sedikit memantul, menutup mulus tanpa pantulan. Isi panel muncul
+  membesar dari 80% dengan titik tumpu di atas. Sudut notch memakai kurva yang lebih lembut dan
+  ikut membesar saat terbuka.
+- **Bayangan** lembut di bawah notch saat terbuka, dan tipis saat disentuh kursor.
+- **Intip saat disentuh**: pil langsung sedikit membesar saat disentuh kursor, baru terbuka
+  penuh sesaat kemudian. Garis tipis (saat jendela di-maximize) juga kembali jadi pil dulu.
+- **Kabar ringkas ala Dynamic Island** (menyala secara default, menu tray → Pengaturan → Kabar
+  ringkas): volume, kecerahan, Caps/Num Lock, dan charger tampil setinggi pil dengan notch melebar
+  ke samping. Angka bergulir ke nilai baru dan bilahnya bergeser halus. Kabar lain (pesan,
+  Bluetooth, unduhan, dll.) tetap berbentuk kartu karena isinya dua baris.
+
+## Tahap 8: kalender, gestur, unduhan, dan bagikan
+
+- **Kalender di Beranda** (menu tray → Pengaturan → Kalender di Beranda, menyala secara default):
+  Beranda melebar dengan musik atau jam di kiri dan kalender di kanan. Deretan lima hari bergeser
+  (klik hari, atau putar roda mouse di atasnya), hari ini ditandai biru, dan hari yang punya agenda
+  diberi titik. Kepala kolom menampilkan cuaca (kalau aktif) dan persen baterai.
+- **Agenda sendiri**: klik "+ Tambah agenda" lalu ketik, misal `09.00 Rapat tim` atau
+  `Beli kado 15:30` (jam di awal atau akhir; tanpa jam = sepanjang hari). Enter menyimpan ke hari
+  yang sedang dipilih. Klik lingkaran untuk menandai selesai, sorot lalu klik × untuk menghapus.
+  Saat jamnya tiba muncul kabar "Agenda sekarang" dengan bunyi pengingat. Disimpan di
+  `%APPDATA%\NotchWindows\agenda.txt`; agenda yang lewat lebih dari 60 hari dibuang. Di lock screen
+  kalender tidak ditampilkan karena agenda itu pribadi.
+- **Gestur touchpad**: geser dua jari ke kanan/kiri di pil selama musik diputar untuk lagu
+  berikutnya/sebelumnya.
+- **Unduhan yang berjalan**: selama browser mengunduh ke folder Downloads, pil melebar dan
+  menampilkan ikon unduh serta ukuran yang terus bertambah (persennya tidak diketahui karena browser
+  tidak memberi tahu ukuran totalnya). Musik dan timer tetap didahulukan di pil.
+- **Zona Bagikan**: saat file diseret ke notch, area lepas terbagi dua: "Simpan di shelf" dan
+  **"Bagikan"**. Melepas file di Bagikan membuka jendela Bagikan Windows (Berbagi di Sekitar ke PC
+  lain, ponsel lewat Phone Link, email, WhatsApp, dll.), padanan AirDrop di Mac. Notch sendiri tidak
+  mengirim apa pun; tujuannya dipilih di jendela Windows itu.
+- **Maskot bangun**: saat notch muncul, setelah buka kunci, dan setelah laptop bangun dari tidur,
+  mata maskot terpejam sebentar lalu terbuka perlahan dan berkedip.
+
+## Tahap 9: tampilan musik baru
+
+- **Pemutar baru**: sampul, judul tebal, dan artis di atas; waktu berjalan, bar, dan sisa waktu di
+  tengah; tombol lirik (kiri) serta ⏮ ⏯ ⏭ (tengah) di bawah. Kepala pemutar berisi tanggal dan jam
+  di tengah dengan cincin baterai (hijau saat mengisi, merah saat hampir habis), cuaca di kiri
+  (kalau aktif), dan gelombang musik di kanan.
+- **Kolom lirik**: tombol gelembung kata di bawah waktu berjalan menampilkan/menyembunyikan lirik
+  di samping pemutar. Dengan kalender, kalender bergeser keluar lalu lirik bergeser masuk; tanpa
+  kalender, notch melebar ke samping. Tiga baris terlihat: baris sebelumnya redup, baris yang
+  sedang dinyanyikan putih tebal (sampai dua baris), baris berikutnya redup; saat baris berganti
+  semuanya bergulir naik. Tombolnya hanya muncul kalau "Lirik lagu (memakai internet)" di menu
+  tray sudah dinyalakan, dan pilihannya diingat.
+- **Seret bar untuk lompat**: bar progres menebal saat disorot; klik atau seret untuk lompat ke
+  bagian lagu lain. Hanya untuk aplikasi yang mengizinkannya di kontrol media Windows (misal Spotify
+  dan YouTube di browser); kalau tidak, bar tidak bisa diklik.
+- **Pendaran warna**: bagian bawah panel berpendar warna sampul lagu, oranye selama timer berjalan,
+  dan merah/hijau selama pomodoro berjalan.
+- **Halaman lain disamakan**: tombol putar/jeda berbentuk padat seperti di pemutar, slider volume
+  dan kecerahan tanpa kenop dan menebal saat disorot seperti bar lagu, judul halaman lebih
+  terang, dan halaman jam memakai kepala yang sama (cuaca di kiri, baterai di kanan).
+
 ## Pasang dan perbarui
 
 Notch dipasang di `%LOCALAPPDATA%\Programs\NotchWindows`, terpisah dari folder build, jadi build
@@ -178,7 +242,8 @@ menandatangani apa pun lagi. "Mulai bersama Windows" yang aktif ikut dipindah ke
 Tidak ada yang diunduh. Kalau Windows bertanya izin membaca notifikasi, pilih izinkan. Ulangi
 skrip ini hanya kalau isi folder `packaging` berubah.
 
-**Perbarui** setelah build baru (tanpa Administrator):
+**Perbarui** setelah build baru (tanpa Administrator): klik dua kali `packaging\update.cmd`, atau
+jalankan:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File "D:\Penyimpanan Utama\Documents\My mine\Notch Windows\packaging\update.ps1"
@@ -217,7 +282,7 @@ berjalan.
 | `src/app.rs` | Jendela, input mouse/keyboard, timer, loop pesan, perpindahan bentuk dan halaman |
 | `src/render/mod.rs` | Gambar notch dengan Direct2D (software) ke layered window, alat gambar dasar, ikon tray |
 | `src/render/pages.rs` | Tata letak pil, HUD, dan tiap halaman panel; area klik didaftarkan sambil menggambar |
-| `src/widgets/` | Data dan aturan shelf, pomodoro, timer, minum air, tugas, serta urutan halaman (diuji dengan `cargo test`) |
+| `src/widgets/` | Data dan aturan shelf, pomodoro, timer, minum air, tugas, agenda kalender, serta urutan halaman (diuji dengan `cargo test`) |
 | `src/store.rs` | Simpan/muat file teks di `%APPDATA%\NotchWindows` |
 | `src/dragdrop.rs` | Seret file masuk/keluar, buka file, tampilkan di Explorer |
 | `src/thumbnail.rs` | Thumbnail file dari Windows, di thread terpisah |
@@ -235,6 +300,7 @@ berjalan.
 | `src/lyrics.rs` | Lirik tersinkron dari LRCLIB (opsional), pembaca format LRC |
 | `src/weather.rs` | Cuaca dan pencarian kota dari Open-Meteo (opsional) |
 | `src/http.rs` | HTTPS GET lewat WinHTTP dengan pemeriksaan sertifikat penuh |
+| `src/share.rs` | Jendela Bagikan Windows untuk file yang dilepas di zona Bagikan |
 | `src/sysinfo.rs` | CPU, GPU (beban dan suhu), RAM, disk, dan jaringan |
 | `src/folders.rs` | Pantau folder Screenshots dan Downloads untuk file baru yang selesai ditulis |
 | `src/network.rs` | Status Wi-Fi tersambung/terputus |
@@ -249,7 +315,9 @@ berjalan.
 RAM saat diam di bawah 40 MB, CPU saat diam sekitar 0%, terbuka kurang dari 1 detik.
 Notch hanya menggambar saat ada yang bergerak; selebihnya proses tidur menunggu event.
 Saat musik diputar, gelombang di pil digambar ulang sekitar 12 kali per detik, tapi hanya
-kotak kecil di sekitar gelombangnya (sekitar 10 ms CPU per detik). Kedipan dan lirikan mata
+kotak kecil di sekitar gelombangnya (sekitar 10 ms CPU per detik). Selama panel pemutar terbuka,
+gelombang di kepalanya juga digambar sendiri; panel penuh hanya digambar ulang saat detik lagu
+atau baris lirik berganti (sekitar 15 ms CPU per detik). Kedipan dan lirikan mata
 maskot juga hanya menggambar ulang area matanya. Selama matanya terlihat, posisi kursor dilihat
 5 kali per detik (sekali per detik kalau kursor lama diam); pemantau folder dan Wi-Fi tidur
 sampai Windows mengabari ada perubahan.

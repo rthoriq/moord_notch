@@ -39,6 +39,12 @@ impl Spring {
         }
     }
 
+    /// Ganti seberapa memantul pegasnya (lihat [`Spring::new`]), misal membuka memantul tapi
+    /// menutup mulus seperti notch di Mac.
+    pub fn set_damping_ratio(&mut self, damping_ratio: f32) {
+        self.damping = 2.0 * damping_ratio * self.stiffness.sqrt();
+    }
+
     /// Langsung ke `value` tanpa animasi.
     pub fn snap(&mut self, value: f32) {
         self.value = value;

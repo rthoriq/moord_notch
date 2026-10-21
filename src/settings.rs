@@ -135,6 +135,13 @@ pub struct Settings {
     pub meeting: bool,
     /// Cuaca dari Open-Meteo (memakai internet). Mati secara default.
     pub weather: bool,
+    /// Kabar volume, kecerahan, Caps Lock, dan charger ringkas ala Dynamic Island.
+    pub compact_hud: bool,
+    /// Beranda lebar dengan kalender dan agenda di kanannya.
+    pub calendar: bool,
+    /// Kolom lirik di samping pemutar musik (tombol lirik di panel). Hanya berlaku kalau
+    /// `lyrics` aktif.
+    pub lyric_panel: bool,
     pub messages: Messages,
     /// Tampilkan "Pesan baru dari …" saja, tanpa isi pesannya.
     pub hide_content: bool,
@@ -159,6 +166,9 @@ impl Default for Settings {
             hotkey: true,
             meeting: true,
             weather: false,
+            compact_hud: true,
+            calendar: true,
+            lyric_panel: false,
             messages: Messages::default(),
             hide_content: false,
             browser_messages: false,
@@ -194,6 +204,9 @@ impl Settings {
                 "pintasan" => settings.hotkey = yes,
                 "mode-rapat" => settings.meeting = yes,
                 "cuaca" => settings.weather = yes,
+                "kabar-ringkas" => settings.compact_hud = yes,
+                "kalender" => settings.calendar = yes,
+                "panel-lirik" => settings.lyric_panel = yes,
                 "halaman" => settings.pages = Pages::parse(value),
                 "ukuran" => {
                     if let Some(size) = Size::ALL.into_iter().find(|s| s.key() == value) {
@@ -231,6 +244,9 @@ impl Settings {
             format!("pintasan={}", yes(self.hotkey)),
             format!("mode-rapat={}", yes(self.meeting)),
             format!("cuaca={}", yes(self.weather)),
+            format!("kabar-ringkas={}", yes(self.compact_hud)),
+            format!("kalender={}", yes(self.calendar)),
+            format!("panel-lirik={}", yes(self.lyric_panel)),
             format!("pesan={}", self.messages.key()),
             format!("sembunyikan-isi={}", yes(self.hide_content)),
             format!("pesan-browser={}", yes(self.browser_messages)),
@@ -260,6 +276,9 @@ mod tests {
             hotkey: false,
             meeting: false,
             weather: true,
+            compact_hud: false,
+            calendar: false,
+            lyric_panel: true,
             messages: Messages::AllChat,
             hide_content: true,
             browser_messages: true,

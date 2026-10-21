@@ -188,6 +188,18 @@ pub fn gigabytes(bytes: u64) -> String {
     format!("{:.1} GB", bytes as f64 / 1_073_741_824.0).replace('.', ",")
 }
 
+
+/// Ukuran file singkat: "850 KB", "12,4 MB", atau "1,2 GB".
+pub fn size(bytes: u64) -> String {
+    let b = bytes as f64;
+    if b >= 1_073_741_824.0 {
+        format!("{:.1} GB", b / 1_073_741_824.0).replace('.', ",")
+    } else if b >= 1_048_576.0 {
+        format!("{:.1} MB", b / 1_048_576.0).replace('.', ",")
+    } else {
+        format!("{:.0} KB", (b / 1024.0).max(1.0))
+    }
+}
 /// "1,2 MB/s" atau "80 KB/s"
 pub fn rate(bytes_per_sec: f64) -> String {
     if bytes_per_sec >= 1_048_576.0 {
@@ -206,6 +218,8 @@ mod tests {
         assert_eq!(gigabytes(10_522_669_875), "9,8 GB");
         assert_eq!(rate(1_258_291.0), "1,2 MB/s");
         assert_eq!(rate(81_920.0), "80 KB/s");
+        assert_eq!(size(13_002_342), "12,4 MB");
+        assert_eq!(size(870_400), "850 KB");
     }
 
     /// Pengukuran sungguhan di mesin ini; dua kali ambil supaya persen CPU terisi.

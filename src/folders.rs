@@ -2,7 +2,7 @@
 //! ditulis. Windows mengabari perubahan folder, jadi tidak ada pemindaian berkala; thread
 //! pemantau tidur sampai ada file yang berubah.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::thread::{self, JoinHandle};
@@ -123,6 +123,7 @@ fn run(dir: &Path, kind: Kind, stop: HANDLE, notify: &Notifier) {
     let mut buffer = vec![0u32; 16 * 1024];
     let mut pending: HashMap<String, Pending> = HashMap::new();
     let mut reported: Vec<(String, Instant)> = Vec::new();
+    let mut downloading = Downloading::default();
     'watch: loop {
         let mut overlapped = OVERLAPPED { hEvent: event, ..Default::default() };
         let filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE;
@@ -133,7 +134,13 @@ fn run(dir: &Path, kind: Kind, stop: HANDLE, notify: &Notifier) {
             break;
         }
         loop {
-            let timeout = if pending.is_empty() { INFINITE } else { 300 };
+            let timeout = if !pending.is_empty() {
+                300
+            } else if !downloading.names.is_empty() {
+                1_000
+            } else {
+                INFINITE
+            };
             let woke = unsafe { WaitForMultipleObjects(&[event, stop], false, timeout) };
             if woke == WAIT_OBJECT_0 {
                 let mut bytes = 0;
@@ -141,15 +148,19 @@ fn run(dir: &Path, kind: Kind, stop: HANDLE, notify: &Notifier) {
                     // 0 byte berarti terlalu banyak perubahan sekaligus; yang terlewat dibiarkan.
                     let now = Instant::now();
                     for name in changed_names(&buffer, bytes as usize) {
-                        if wanted(&name, kind) {
+                        if kind == Kind::Downloads && partial(&name) {
+                            downloading.names.insert(name);
+                        } else if wanted(&name, kind) {
                             pending.entry(name).and_modify(|p| p.last = now).or_insert(Pending { first: now, last: now });
                         }
                     }
                 }
                 check(dir, kind, &mut pending, &mut reported, notify);
+                downloading.report(dir, notify);
                 continue 'watch;
             } else if woke == WAIT_TIMEOUT {
                 check(dir, kind, &mut pending, &mut reported, notify);
+                downloading.report(dir, notify);
             } else {
                 // Diminta berhenti, atau galat.
                 unsafe {
@@ -197,6 +208,43 @@ fn wanted(name: &str, kind: Kind) -> bool {
     match kind {
         Kind::Screenshot => matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp"),
         Kind::Downloads => !TEMP_EXTENSIONS.contains(&ext),
+    }
+}
+
+/// File sementara browser untuk unduhan yang sedang berjalan.
+fn partial(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    let ext = lower.rsplit_once('.').map_or("", |(_, ext)| ext);
+    matches!(ext, "crdownload" | "part" | "partial" | "download" | "opdownload" | "!ut")
+}
+
+/// Unduhan yang sedang berjalan: file sementara browser di Downloads. Selama masih ada, jumlah
+/// dan total ukurannya dikabarkan paling sering sekali sedetik.
+#[derive(Default)]
+struct Downloading {
+    names: HashSet<String>,
+    /// Kabar terakhir (jumlah, byte); `None` = belum ada unduhan yang dikabarkan.
+    reported: Option<(usize, u64)>,
+    checked: Option<Instant>,
+}
+
+impl Downloading {
+    fn report(&mut self, dir: &Path, notify: &Notifier) {
+        let now = Instant::now();
+        if self.names.is_empty() && self.reported.is_none()
+            || self.checked.is_some_and(|t| now.duration_since(t) < Duration::from_millis(900))
+        {
+            return;
+        }
+        self.checked = Some(now);
+        // File sementara yang hilang berarti unduhannya selesai (diganti nama) atau dibatalkan.
+        self.names.retain(|name| dir.join(name).is_file());
+        let bytes = self.names.iter().filter_map(|name| std::fs::metadata(dir.join(name)).ok()).map(|m| m.len()).sum();
+        let state = (self.names.len() > 0).then_some((self.names.len(), bytes));
+        if state != self.reported {
+            self.reported = state;
+            notify.send(Event::Downloading(state));
+        }
     }
 }
 
@@ -271,6 +319,14 @@ fn check(dir: &Path, kind: Kind, pending: &mut HashMap<String, Pending>, reporte
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spots_downloads_in_progress() {
+        assert!(partial("Unconfirmed 1234.crdownload"));
+        assert!(partial("film.mp4.part"));
+        assert!(!partial("laporan.pdf"));
+        assert!(!partial("~$dokumen.tmp"), "file sementara biasa bukan unduhan");
+    }
 
     #[test]
     fn skips_temporary_and_hidden_files() {

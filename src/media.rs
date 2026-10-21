@@ -39,6 +39,8 @@ pub enum Command {
     TogglePlayPause,
     Next,
     Previous,
+    /// Lompat ke posisi lagu, dalam satuan 100 nanodetik pada linimasa sesi.
+    Seek(i64),
 }
 
 /// Sampul album: piksel BGRA premultiplied berukuran `ART_PX` x `ART_PX`.
@@ -54,16 +56,18 @@ pub struct Snapshot {
     pub title: String,
     pub artist: String,
     pub album: String,
-    /// Nama aplikasi pemutar, misal "Spotify" atau "Chrome".
-    pub source: String,
     pub playing: bool,
-    /// Posisi (detik) pada saat `at`.
+    /// Posisi (detik) pada saat `at`, dihitung dari awal linimasa (`start`).
     pub position: f64,
+    /// Awal linimasa sesi (detik); posisi untuk lompat dihitung dari sini.
+    pub start: f64,
     pub duration: f64,
     pub rate: f64,
     pub at: Instant,
     pub can_previous: bool,
     pub can_next: bool,
+    /// Aplikasinya mengizinkan lompat ke posisi lain (bar progres bisa diseret).
+    pub can_seek: bool,
     pub art: Option<Arc<Art>>,
 }
 
@@ -138,6 +142,7 @@ impl Monitor {
             Command::TogglePlayPause => session.TryTogglePlayPauseAsync(),
             Command::Next => session.TrySkipNextAsync(),
             Command::Previous => session.TrySkipPreviousAsync(),
+            Command::Seek(ticks) => session.TryChangePlaybackPositionAsync(ticks),
         };
         if let Err(e) = operation.and_then(|op| op.join()) {
             debug_log!("perintah media {command:?} gagal: {e}");
@@ -208,14 +213,15 @@ fn read(session: &Session, flags: u8, last: Option<&Snapshot>, next_art_id: &mut
         title,
         artist,
         album,
-        source: app_name(&session.SourceAppUserModelId()?.to_string()),
         playing,
         position,
+        start,
         duration,
         rate,
         at: Instant::now(),
         can_previous: controls.IsPreviousEnabled()?,
         can_next: controls.IsNextEnabled()?,
+        can_seek: controls.IsPlaybackPositionEnabled().unwrap_or(false),
         art,
     })
 }

@@ -8,6 +8,11 @@
 //! Tahap 5: pintasan Win+Alt+N, atur halaman dan ukuran, maskot berekspresi, screenshot ke
 //! shelf, kabar unduhan dan Wi-Fi, serta suhu GPU.
 //! Tahap 6: kontrol cepat, timer, cuaca opsional, mode rapat, dan pemasangan di lokasi tetap.
+//! Tahap 7: tampilan ala notch Mac (seret file, buka/tutup, bayangan, intip, kabar ringkas).
+//! Tahap 8: kalender dan agenda di Beranda, gestur touchpad, unduhan berjalan, zona Bagikan,
+//! dan maskot bangun.
+//! Tahap 9: tampilan musik baru, kolom lirik yang bergeser masuk, seret bar untuk lompat, dan
+//! pendaran warna sampul.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 /// Pesan diagnostik, hanya muncul di build debug (yang punya jendela konsol).
@@ -39,6 +44,7 @@ mod privacy;
 mod render;
 mod services;
 mod settings;
+mod share;
 mod sound;
 mod store;
 mod sysinfo;

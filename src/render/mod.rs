@@ -15,17 +15,18 @@ use std::path::PathBuf;
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_BEZIER_SEGMENT,
-    D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED,
+    D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED, D2D1_GRADIENT_STOP, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED,
     D2D1_FIGURE_END_OPEN, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE, D2D1_ARC_SIZE_LARGE,
+    D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE, D2D1_ARC_SIZE_LARGE, D2D1_QUADRATIC_BEZIER_SEGMENT,
     D2D1_ARC_SIZE_SMALL, D2D1_BITMAP_PROPERTIES, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_CUSTOM,
-    D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE,
+    D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP,
+    D2D1_GAMMA_2_2, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT, D2D1_LINE_JOIN_ROUND,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
     D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES,
-    D2D1_SWEEP_DIRECTION, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+    D2D1_SWEEP_DIRECTION, D2D1_SWEEP_DIRECTION_CLOCKWISE,
     D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, D2D1CreateFactory, ID2D1BitmapBrush, ID2D1Brush,
     ID2D1DCRenderTarget, ID2D1Factory, ID2D1PathGeometry, ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
@@ -73,8 +74,13 @@ pub enum View {
     LyricPill,
     /// Kabar singkat: volume, daya, Bluetooth, pomodoro, minum, privasi.
     Hud,
+    /// Kabar ringkas ala Dynamic Island: notch melebar ke samping setinggi pil (volume,
+    /// kecerahan, Caps/Num Lock, charger).
+    Strip,
     /// Panel terbuka berisi halaman-halaman widget.
     Panel,
+    /// Beranda lebar: musik/jam di kiri, kalender di kanan.
+    PanelWide,
 }
 
 /// Jumlah isi yang bisa memudar masuk/keluar; urutannya sesuai [`View::content`].
@@ -87,8 +93,15 @@ impl View {
             View::Pill => (176.0, 30.0),
             View::LyricPill => (360.0, 30.0),
             View::Hud => (320.0, 42.0),
+            View::Strip => (300.0, 30.0),
             View::Panel => (440.0, 156.0),
+            View::PanelWide => (660.0, 156.0),
         }
+    }
+
+    /// Panel terbuka, biasa maupun lebar.
+    pub const fn is_panel(self) -> bool {
+        matches!(self, View::Panel | View::PanelWide)
     }
 
     /// Indeks isi yang tampil di bentuk ini; garis tipis tidak berisi apa-apa.
@@ -97,8 +110,8 @@ impl View {
             View::Slim => None,
             View::Pill => Some(0),
             View::LyricPill => Some(1),
-            View::Hud => Some(2),
-            View::Panel => Some(3),
+            View::Hud | View::Strip => Some(2),
+            View::Panel | View::PanelWide => Some(3),
         }
     }
 }
@@ -118,6 +131,8 @@ pub enum Hud {
     LockKey { caps: bool, on: bool },
     /// Pesan masuk; logonya dicari lewat `aumid` (lihat [`Renderer::set_logo`]).
     Message { app: String, aumid: String, sender: String, text: String, browser: bool },
+    /// Agenda yang jatuh tempo sekarang, misal "Rapat tim" pukul "09.00".
+    Agenda { text: String, time: String },
     /// Screenshot baru masuk shelf; `id` item shelf untuk thumbnail-nya, `more` = screenshot lain.
     Screenshot { id: u64, name: String, more: usize },
     /// Unduhan selesai; `more` = file lain yang selesai bersamaan.
@@ -171,6 +186,10 @@ pub enum Hit {
     PageNext,
     PageDot(Page),
     Media(Button),
+    /// Tombol lirik di bawah pemutar: tampilkan/sembunyikan kolom lirik.
+    LyricsToggle,
+    /// Bar progres lagu (bisa diklik/diseret untuk lompat, lihat [`Renderer::slider_value`]).
+    MediaSeek,
     /// Latar deretan ubin shelf (untuk roda mouse).
     ShelfStrip,
     ShelfItem(u64),
@@ -198,12 +217,25 @@ pub enum Hit {
     TimerCancel,
     TimerAdd,
     TimerPreset(u32),
+    /// Hari di deretan kalender, sebagai selisih hari dari hari ini.
+    CalendarDay(i32),
+    /// Latar deretan tanggal dan daftar agenda (untuk roda mouse).
+    CalendarStrip,
+    AgendaList,
+    /// Satu baris agenda: hanya untuk sorotan, supaya tombol × tetap tampil saat kursor
+    /// bergerak dari lingkaran ke ujung kanan baris.
+    AgendaRow(u64),
+    AgendaToggle(u64),
+    AgendaRemove(u64),
+    AgendaInput,
+    /// Zona "Bagikan" selama file diseret ke notch.
+    DropShare,
 }
 
 impl Hit {
     /// Latar belakang hanya menangkap roda mouse, bukan klik.
     pub fn clickable(self) -> bool {
-        !matches!(self, Hit::ShelfStrip | Hit::TaskList)
+        !matches!(self, Hit::ShelfStrip | Hit::TaskList | Hit::CalendarStrip | Hit::AgendaList | Hit::AgendaRow(_))
     }
 }
 
@@ -211,7 +243,6 @@ impl Hit {
 pub struct MediaView {
     pub title: String,
     pub artist: String,
-    pub source: String,
     pub playing: bool,
     /// 0..1, atau `None` kalau durasinya tidak diketahui (misal siaran langsung).
     pub progress: Option<f32>,
@@ -219,7 +250,21 @@ pub struct MediaView {
     pub remaining: String,
     pub can_previous: bool,
     pub can_next: bool,
+    /// Bar progres bisa diseret untuk lompat; `seeking` = sedang diseret.
+    pub can_seek: bool,
+    pub seeking: bool,
     pub accent: Option<u32>,
+}
+
+/// Kolom lirik di samping pemutar: lima baris di sekitar baris yang sedang dinyanyikan.
+pub struct LyricsView {
+    /// Dua baris sebelumnya, baris sekarang (tengah), dan dua baris berikutnya; kosong kalau
+    /// di luar lagu.
+    pub lines: [String; 5],
+    /// Gulir ke baris baru, 0..1 (1 = diam di tempat).
+    pub scroll: f32,
+    /// Keterangan pengganti lirik, misal "Mencari lirik…".
+    pub status: Option<&'static str>,
 }
 
 pub struct FocusView {
@@ -244,6 +289,70 @@ pub struct TimerView {
     pub short: String,
     pub progress: f32,
     pub total_minutes: u32,
+}
+
+/// Kolom kalender di Beranda lebar.
+pub struct CalendarView {
+    /// Bulan dan tahun hari yang dipilih, misal "Okt" dan "2026".
+    pub month: String,
+    pub year: String,
+    /// Lima hari berurutan, hari yang dipilih di tengah.
+    pub days: Vec<DayView>,
+    /// Agenda hari yang dipilih.
+    pub events: Vec<AgendaItem>,
+    pub scroll: usize,
+}
+
+pub struct DayView {
+    /// Selisih hari dari hari ini.
+    pub offset: i32,
+    pub name: &'static str,
+    pub number: u32,
+    pub today: bool,
+    pub selected: bool,
+    pub has_events: bool,
+}
+
+pub struct AgendaItem {
+    pub id: u64,
+    /// "09.00", atau kosong untuk sepanjang hari.
+    pub time: String,
+    pub text: String,
+    pub done: bool,
+}
+
+/// Angka kabar yang sedang bergulir ke nilai baru (misal volume 62 → 63).
+pub struct Roll {
+    /// Tulisan sebelumnya.
+    pub from: String,
+    /// Kemajuan, 0..1.
+    pub t: f32,
+    /// Nilai naik: angka lama naik keluar, angka baru masuk dari bawah.
+    pub up: bool,
+}
+
+/// Tulisan nilai kabar volume ("62", "Bisu") atau kecerahan ("70").
+pub fn hud_value(hud: &Hud) -> Option<String> {
+    match hud {
+        Hud::Volume { muted: true, .. } => Some("Bisu".to_string()),
+        Hud::Volume { level, .. } | Hud::Brightness { level } => Some(format!("{}", (level * 100.0).round())),
+        _ => None,
+    }
+}
+
+/// Animasi shelf: area lepas saat file diseret, pendaran sesudah dilepas, dan ubin yang
+/// muncul atau menghilang.
+#[derive(Default)]
+pub struct ShelfFx {
+    /// File sedang diseret tepat di atas area lepas shelf, atau di atas zona Bagikan.
+    pub targeted: bool,
+    pub share_targeted: bool,
+    /// Geseran garis putus-putus yang berjalan (dalam satuan tebal garis).
+    pub dash: f32,
+    /// Pendaran sesudah file dilepas, 0..1 (1 = selesai).
+    pub glow: Option<f32>,
+    /// Skala dan transparansi ubin yang sedang muncul atau menghilang.
+    pub tiles: HashMap<u64, (f32, f32)>,
 }
 
 /// Isi halaman kontrol cepat; `None` berarti tidak tersedia di laptop ini.
@@ -276,19 +385,37 @@ pub struct Scene<'a> {
     /// Transparansi tiap isi: pil, pil lirik, HUD, panel.
     pub alpha: [f32; CONTENTS],
     pub eyes: Eyes,
+    /// Kekuatan bayangan di bawah notch, 0..1 (penuh saat terbuka, tipis saat disorot).
+    pub shadow: f32,
     pub time: &'a str,
     pub date: &'a str,
+    /// Tanggal singkat untuk kepala pemutar, misal "Rab 21 Okt 2026".
+    pub day: &'a str,
     pub greeting: &'a str,
+    /// Persen baterai dan sedang mengisi atau tidak; `None` di PC tanpa baterai.
+    pub battery: Option<(u32, bool)>,
     pub media: Option<&'a MediaView>,
     /// Baris lirik yang sedang dinyanyikan, kalau lirik aktif dan ditemukan.
     pub lyric: Option<&'a str>,
+    /// Kolom lirik di samping pemutar (tombol lirik menyala).
+    pub lyrics: Option<&'a LyricsView>,
+    /// Kolom kanan Beranda bergeser dari kalender (0) ke lirik (1).
+    pub lyric_mix: f32,
+    /// Tombol lirik: `None` = tidak tampil (fitur lirik mati), `Some(nyala)`.
+    pub lyrics_button: Option<bool>,
     pub hud: Option<&'a Hud>,
+    /// Kabar digambar ringkas (lihat [`View::Strip`]).
+    pub hud_compact: bool,
+    pub hud_roll: Option<&'a Roll>,
+    /// Isi bilah volume/kecerahan yang sedang bergeser halus ke nilai baru, 0..1.
+    pub hud_fill: f32,
     pub page: Page,
     /// Urutan halaman dan yang disembunyikan, untuk titik penanda.
     pub pages: Pages,
     /// Halaman sebelumnya selama perpindahan: (halaman, progres 0..1, arah ±1).
     pub page_from: Option<(Page, f32, f32)>,
     pub shelf: &'a Shelf,
+    pub shelf_fx: &'a ShelfFx,
     pub tasks: &'a Tasks,
     pub focus: &'a FocusView,
     pub water: &'a WaterView,
@@ -305,6 +432,12 @@ pub struct Scene<'a> {
     pub weather: Option<&'a str>,
     /// Nama kota yang sedang diketik.
     pub city_draft: Option<&'a str>,
+    /// Unduhan yang sedang berjalan di pil, misal "12,4 MB" atau "2 · 30,1 MB".
+    pub download: Option<&'a str>,
+    /// Kolom kalender; `None` = Beranda biasa (kalender dimatikan atau di lock screen).
+    pub calendar: Option<&'a CalendarView>,
+    /// Agenda yang sedang diketik.
+    pub agenda_draft: Option<&'a str>,
     pub hovered: Option<Hit>,
     /// Detik berjalan, untuk animasi gelombang musik.
     pub seconds: f64,
@@ -373,9 +506,14 @@ fn palette(theme: Theme) -> Palette {
     }
 }
 
-/// Lengkung cekung tempat notch menyatu dengan tepi atas layar.
-const FLARE_MIN: f32 = 6.0;
-const FLARE_MAX: f32 = 10.0;
+/// Lengkung cekung tempat notch menyatu dengan tepi atas layar, dan sudut bawahnya. Keduanya
+/// membesar bersama notch (tertutup → terbuka), seperti notch di Mac.
+const FLARE_MIN: f32 = 7.0;
+const FLARE_MAX: f32 = 14.0;
+const RADIUS_MIN: f32 = 13.0;
+const RADIUS_MAX: f32 = 28.0;
+/// Jangkauan bayangan di bawah notch.
+const SHADOW: f32 = 16.0;
 /// Pil lirik melebar mengikuti panjang baris sampai batas ini; kalau masih kurang, jadi dua baris.
 const LYRIC_MIN_W: f32 = 300.0;
 const LYRIC_MAX_W: f32 = 480.0;
@@ -384,9 +522,9 @@ const LYRIC_TWO_LINES_H: f32 = 44.0;
 const LYRIC_SIDES: f32 = 84.0;
 /// Kanvas jendela: muat bentuk terbesar, lengkungannya, dan lebihan saat pegas memantul.
 const CANVAS: (f32, f32) = {
-    let (w, h) = View::Panel.size();
+    let (w, h) = View::PanelWide.size();
     let widest = if LYRIC_MAX_W > w { LYRIC_MAX_W } else { w };
-    (widest + 2.0 * FLARE_MAX + 40.0, h + 16.0)
+    (widest + 2.0 * FLARE_MAX + 40.0, h + SHADOW + 6.0)
 };
 
 const CLEAR: D2D1_COLOR_F = rgb(0x000000, 0.0);
@@ -401,10 +539,13 @@ const ICON_BG: D2D1_COLOR_F = rgb(0x1C1C1E, 1.0);
 const ICON_EYE: D2D1_COLOR_F = rgb(0xF5F5F7, 1.0);
 
 // Glyph dari font ikon bawaan Windows (Segoe Fluent Icons / Segoe MDL2 Assets).
-const ICON_PLAY: char = '\u{E768}';
-const ICON_PAUSE: char = '\u{E769}';
-const ICON_PREVIOUS: char = '\u{E892}';
-const ICON_NEXT: char = '\u{E893}';
+const ICON_PLAY: char = '\u{F5B0}';
+const ICON_PAUSE: char = '\u{F8AE}';
+const ICON_PREVIOUS: char = '\u{F8AC}';
+const ICON_NEXT: char = '\u{F8AD}';
+/// Gelembung kata: garis luar saat kolom lirik tersembunyi, terisi saat tampil.
+const ICON_LYRICS: char = '\u{E90A}';
+const ICON_LYRICS_ON: char = '\u{ED0C}';
 const ICON_MUTE: char = '\u{E74F}';
 const ICON_VOLUME: [char; 4] = ['\u{E992}', '\u{E993}', '\u{E994}', '\u{E995}'];
 const ICON_BLUETOOTH: char = '\u{E702}';
@@ -428,6 +569,8 @@ const ICON_DOWNLOAD: char = '\u{E896}';
 const ICON_WIFI: char = '\u{E701}';
 const ICON_TIMER: char = '\u{E121}';
 const ICON_CONTROLS: char = '\u{E713}';
+const ICON_CALENDAR: char = '\u{E787}';
+const ICON_SHARE: char = '\u{E72D}';
 const ICON_CHEVRON_LEFT: char = '\u{E76B}';
 const ICON_CHEVRON_RIGHT: char = '\u{E76C}';
 const ICON_CHEVRON_UP: char = '\u{E70E}';
@@ -459,6 +602,8 @@ pub struct Renderer {
     hits: RefCell<Vec<(D2D_RECT_F, Hit)>>,
     /// Hanya mencatat area klik saat panel sudah diam di tempatnya.
     recording: Cell<bool>,
+    /// Skala isi panel/kabar dan titik tengahnya: isi muncul membesar dari atas.
+    zoom: Cell<(f32, f32)>,
 }
 
 struct Fonts {
@@ -478,9 +623,10 @@ struct Fonts {
     input: IDWriteTextFormat,
     /// Baris lirik di pil (rata tengah, dipotong "…").
     lyric: IDWriteTextFormat,
-    /// Lirik dua baris di pil, dan lirik di halaman musik (rata kiri).
+    /// Lirik dua baris di pil.
     lyric_wrap: IDWriteTextFormat,
-    lyric_block: IDWriteTextFormat,
+    /// Baris di kolom lirik (rata kiri, sampai dua baris).
+    lyric_line: IDWriteTextFormat,
     label: IDWriteTextFormat,
     label_end: IDWriteTextFormat,
     label_center: IDWriteTextFormat,
@@ -524,7 +670,7 @@ impl Fonts {
             input: f(text, normal, 12.5, lead, false)?,
             lyric: f(text, semi, 12.5, center, true)?,
             lyric_wrap: wrapped(12.0, center)?,
-            lyric_block: wrapped(12.0, lead)?,
+            lyric_line: wrapped(13.5, lead)?,
             label: f(text, semi, 13.0, lead, true)?,
             label_end: f(display, semi, 13.0, end, false)?,
             label_center: f(text, semi, 12.0, center, false)?,
@@ -576,6 +722,7 @@ impl Renderer {
                 logos: HashMap::new(),
                 hits: RefCell::new(Vec::new()),
                 recording: Cell::new(false),
+                zoom: Cell::new((1.0, 0.0)),
             })
         }
     }
@@ -705,7 +852,7 @@ impl Renderer {
         let (w, h) = (scene.width.max(24.0), scene.height.max(4.0));
         let grow = ((h - 30.0) / 98.0).clamp(0.0, 1.0);
         let flare = lerp(FLARE_MIN, FLARE_MAX, grow).min(h * 0.45);
-        let radius = (h * 0.36).min(26.0).min(h - flare).min(w / 2.0 - 1.0).max(0.0);
+        let radius = lerp(RADIUS_MIN, RADIUS_MAX, grow).min(h - flare).min(w / 2.0 - 1.0).max(0.0);
         let (x0, x1) = (cx - w / 2.0, cx + w / 2.0);
         let shape = self.notch_path(cx, w, h, radius, flare)?;
         let [pill, lyric, hud, panel] = scene.alpha;
@@ -717,8 +864,18 @@ impl Renderer {
             self.target.BindDC(self.surface.dc, &bounds)?;
             self.target.BeginDraw();
             self.target.Clear(Some(&CLEAR));
+            if scene.shadow > 0.01 {
+                // Hanya di bawah tepi bawah notch. Badan tema kaca tembus pandang, jadi bayangan di
+                // baliknya akan ikut terlihat sebagai pita gelap di dalam panel.
+                self.target.PushAxisAlignedClip(&rect(0.0, h, CANVAS.0, CANVAS.1), D2D1_ANTIALIAS_MODE_ALIASED);
+                self.shadow(cx, w, h, radius, scene.shadow);
+                self.target.PopAxisAlignedClip();
+            }
             self.brush.SetColor(&self.pal.body);
             self.target.FillGeometry(&shape, &self.brush, None::<&ID2D1Brush>);
+            if panel > 0.01 {
+                self.panel_glow(scene, &shape, h, panel);
+            }
             if self.pal.glass {
                 self.brush.SetColor(&rgb(0xFFFFFF, 0.24));
                 self.target.DrawGeometry(&shape, &self.brush, 1.0, None::<&ID2D1StrokeStyle>);
@@ -735,7 +892,7 @@ impl Renderer {
             if hud > 0.01
                 && let Some(data) = scene.hud
             {
-                self.draw_hud(data, x0, x1, hud);
+                self.draw_hud(scene, data, x0, x1, h, hud);
             }
             if panel > 0.01 {
                 self.draw_panel(scene, x0, x1, panel);
@@ -753,10 +910,9 @@ impl Renderer {
         self.patch(cx, cy, 10.0, 8.0, || self.wave(cx, cy, seconds, accent(color, self.pal.text), 1.0))
     }
 
-    /// Gambar ulang hanya mata maskot di pil yang sedang diam, untuk berkedip dan melirik.
-    /// Kotaknya cukup besar untuk lirikan terjauh dan mata yang membulat.
-    pub fn draw_eyes(&self, eyes: Eyes) -> Result<RECT> {
-        let (w, h) = View::Pill.size();
+    /// Gambar ulang hanya mata maskot di pil (berukuran `w`×`h`) yang sedang diam, untuk berkedip
+    /// dan melirik. Kotaknya cukup besar untuk lirikan terjauh dan mata yang membulat.
+    pub fn draw_eyes(&self, w: f32, h: f32, eyes: Eyes) -> Result<RECT> {
         let (cx, cy) = (CANVAS.0 / 2.0 - w / 2.0 + 18.0, h / 2.0);
         self.patch(cx, cy, 11.0, 7.5, || self.eyes(cx, cy, 3.4, 9.0, 7.5, eyes, 1.0))
     }
@@ -810,24 +966,80 @@ impl Renderer {
         unsafe { UpdateLayeredWindowIndirect(hwnd, &info) }.ok()
     }
 
-    /// Badan notch: atas rata menempel ke tepi layar, sudut bawah membulat, dan
-    /// lengkung cekung di kiri-kanan atas seperti notch MacBook.
+    /// Badan notch: atas rata menempel ke tepi layar, sudut bawah membulat, dan lengkung cekung
+    /// di kiri-kanan atas seperti notch MacBook. Lengkungnya kurva kuadrat (seperti DynamicNotchKit
+    /// yang dipakai aplikasi notch di Mac), lebih lembut daripada busur lingkaran.
     fn notch_path(&self, cx: f32, w: f32, h: f32, radius: f32, flare: f32) -> Result<ID2D1PathGeometry> {
         let (x0, x1) = (cx - w / 2.0, cx + w / 2.0);
+        let curve = |control: Vector2, end: Vector2| D2D1_QUADRATIC_BEZIER_SEGMENT { point1: control, point2: end };
         unsafe {
             let geometry = self.factory.CreatePathGeometry()?;
             let sink = geometry.Open()?;
             sink.BeginFigure(pt(x0 - flare, 0.0), D2D1_FIGURE_BEGIN_FILLED);
-            sink.AddArc(&arc(x0, flare, flare, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink.AddQuadraticBezier(&curve(pt(x0, 0.0), pt(x0, flare)));
             sink.AddLine(pt(x0, h - radius));
-            sink.AddArc(&arc(x0 + radius, h, radius, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink.AddQuadraticBezier(&curve(pt(x0, h), pt(x0 + radius, h)));
             sink.AddLine(pt(x1 - radius, h));
-            sink.AddArc(&arc(x1, h - radius, radius, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink.AddQuadraticBezier(&curve(pt(x1, h), pt(x1, h - radius)));
             sink.AddLine(pt(x1, flare));
-            sink.AddArc(&arc(x1 + flare, 0.0, flare, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink.AddQuadraticBezier(&curve(pt(x1, 0.0), pt(x1 + flare, 0.0)));
             sink.EndFigure(D2D1_FIGURE_END_CLOSED);
             sink.Close()?;
             Ok(geometry)
+        }
+    }
+
+    /// Bayangan lembut di bawah notch: beberapa lapis tipis yang makin turun, meniru blur
+    /// (render target software tidak punya efek blur). Hanya di bawah tepi bawah: tepi kiri-kanan
+    /// tiap lapis tetap di dalam badan notch, supaya tidak ada pita gelap di sisi notch.
+    fn shadow(&self, cx: f32, w: f32, h: f32, radius: f32, strength: f32) {
+        const LAYERS: usize = 6;
+        let per_layer = if self.pal.glass { 0.03 } else { 0.055 };
+        for i in 0..LAYERS {
+            let spread = 1.5 + i as f32 * (SHADOW - 1.5) / (LAYERS - 1) as f32;
+            let inset = (radius * 0.6 - spread * 0.4).max(0.0);
+            let area = rect(cx - w / 2.0 + inset, h - radius - 2.0, cx + w / 2.0 - inset, h + spread);
+            self.rounded(area, radius, rgb(0x000000, per_layer), strength);
+        }
+    }
+
+    /// Pendaran warna dari bawah panel, seperti notch di Mac yang memantulkan sampul lagu:
+    /// warna sampul di pemutar musik, oranye selama timer berjalan, merah/hijau selama pomodoro
+    /// berjalan. Ikut memudar saat berpindah halaman.
+    fn panel_glow(&self, s: &Scene, shape: &ID2D1PathGeometry, h: f32, alpha: f32) {
+        // Merah/oranye lebih menyala daripada warna sampul, jadi dibuat sedikit lebih tipis.
+        let color = |page: Page| match page {
+            Page::Home => s.media.and_then(|m| m.accent).map(|c| (rgb(c, 1.0), 1.0)),
+            Page::Timer if s.timer.active => Some((ORANGE, 0.7)),
+            Page::Focus if s.focus.active => Some((phase_color(s.focus.phase), 0.7)),
+            _ => None,
+        };
+        let pages = match s.page_from {
+            Some((from, t, _)) => {
+                let eased = 1.0 - (1.0 - t).powi(3);
+                [(color(from), 1.0 - eased), (color(s.page), eased)]
+            }
+            None => [(None, 0.0), (color(s.page), 1.0)],
+        };
+        // Di tema terang pendarannya lebih tipis supaya teks gelap tetap terbaca.
+        let strength = if self.pal.text.r < 0.5 { 0.2 } else if self.pal.glass { 0.36 } else { 0.45 };
+        for (color, weight) in pages {
+            let Some((color, factor)) = color.filter(|_| weight > 0.01) else { continue };
+            let k = strength * factor * weight * alpha;
+            let stops = [
+                D2D1_GRADIENT_STOP { position: 0.0, color: with_alpha(color, 0.0) },
+                D2D1_GRADIENT_STOP { position: 0.6, color: with_alpha(color, k * 0.3) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: with_alpha(color, k) },
+            ];
+            unsafe {
+                let Ok(collection) = self.target.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)
+                else {
+                    return;
+                };
+                let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES { startPoint: pt(0.0, h * 0.32), endPoint: pt(0.0, h) };
+                let Ok(brush) = self.target.CreateLinearGradientBrush(&props, None, &collection) else { return };
+                self.target.FillGeometry(shape, &brush, None::<&ID2D1Brush>);
+            }
         }
     }
 
@@ -952,10 +1164,17 @@ impl Renderer {
 
     /// Bilah progres/volume: jalur redup dengan isi sepanjang `fraction`.
     fn bar(&self, x0: f32, x1: f32, cy: f32, fraction: f32, color: D2D1_COLOR_F, alpha: f32) {
-        self.rounded(rect(x0, cy - 2.0, x1, cy + 2.0), 2.0, self.tint(0.22), alpha);
+        self.bar_sized(x0, x1, cy, 4.0, fraction, color, alpha);
+    }
+
+    /// Bilah setebal `thick`; bar yang bisa diseret menebal saat disorot, seperti di Mac.
+    #[allow(clippy::too_many_arguments)]
+    fn bar_sized(&self, x0: f32, x1: f32, cy: f32, thick: f32, fraction: f32, color: D2D1_COLOR_F, alpha: f32) {
+        let r = thick / 2.0;
+        self.rounded(rect(x0, cy - r, x1, cy + r), r, self.tint(0.22), alpha);
         let fill = x0 + (x1 - x0) * fraction.clamp(0.0, 1.0);
         if fill > x0 + 0.5 {
-            self.rounded(rect(x0, cy - 2.0, fill.max(x0 + 4.0), cy + 2.0), 2.0, color, alpha);
+            self.rounded(rect(x0, cy - r, fill.max(x0 + thick), cy + r), r, color, alpha);
         }
     }
 
@@ -1030,6 +1249,25 @@ impl Renderer {
                 &D2D1_ROUNDED_RECT { rect: area, radiusX: radius, radiusY: radius },
                 &self.brush,
             );
+        }
+    }
+
+    /// Garis putus-putus yang berjalan mengelilingi `area`; `offset` maju terus selama animasi.
+    fn marching(&self, area: D2D_RECT_F, radius: f32, width: f32, offset: f32, color: D2D1_COLOR_F, alpha: f32) {
+        let props = D2D1_STROKE_STYLE_PROPERTIES {
+            startCap: D2D1_CAP_STYLE_ROUND,
+            endCap: D2D1_CAP_STYLE_ROUND,
+            dashCap: D2D1_CAP_STYLE_ROUND,
+            lineJoin: D2D1_LINE_JOIN_ROUND,
+            miterLimit: 10.0,
+            dashStyle: D2D1_DASH_STYLE_CUSTOM,
+            dashOffset: -offset,
+        };
+        unsafe {
+            let Ok(style) = self.factory.CreateStrokeStyle(&props, Some(&[2.0, 3.0])) else { return };
+            self.brush.SetColor(&with_alpha(color, alpha));
+            let shape = D2D1_ROUNDED_RECT { rect: area, radiusX: radius, radiusY: radius };
+            self.target.DrawRoundedRectangle(&shape, &self.brush, width, &style);
         }
     }
 
@@ -1113,6 +1351,21 @@ impl Renderer {
         }
     }
 
+    /// Tulisan yang bergulir dari nilai lama ke nilai baru, seperti angka di Dynamic Island.
+    fn rolling_text(&self, text: &str, roll: Option<&Roll>, format: &IDWriteTextFormat, area: D2D_RECT_F, color: D2D1_COLOR_F, alpha: f32) {
+        let Some(roll) = roll.filter(|r| r.t < 1.0) else {
+            self.text(text, format, area, color, alpha);
+            return;
+        };
+        let eased = 1.0 - (1.0 - roll.t).powi(3);
+        let shift = (area.bottom - area.top) * 0.9 * if roll.up { -1.0 } else { 1.0 };
+        let moved = |dy: f32| rect(area.left, area.top + dy, area.right, area.bottom + dy);
+        self.push_clip(area);
+        self.text(&roll.from, format, moved(shift * eased), color, alpha * (1.0 - eased));
+        self.text(text, format, moved(-shift * (1.0 - eased)), color, alpha * eased);
+        self.pop_clip();
+    }
+
     /// Lebar teks dalam DIP.
     fn text_width(&self, s: &str, format: &IDWriteTextFormat) -> f32 {
         let wide: Vec<u16> = s.encode_utf16().collect();
@@ -1126,8 +1379,40 @@ impl Renderer {
         }
     }
 
+    /// Geser isi sejauh (`dx`, `dy`), lalu perkecil/perbesar sesuai `zoom` dengan titik tumpu di
+    /// tepi atas tengah notch.
     fn set_offset(&self, dx: f32, dy: f32) {
-        unsafe { self.target.SetTransform(&translation(dx, dy)) };
+        let (s, cx) = self.zoom.get();
+        let m = Matrix3x2 { M11: s, M12: 0.0, M21: 0.0, M22: s, M31: s * dx + cx * (1.0 - s), M32: s * dy };
+        unsafe { self.target.SetTransform(&m) };
+    }
+
+    /// Mulai menggambar isi yang muncul membesar dari atas: `scale` 1 = ukuran asli.
+    fn begin_zoom(&self, scale: f32, cx: f32) {
+        self.zoom.set((scale, cx));
+        self.set_offset(0.0, 0.0);
+    }
+
+    fn end_zoom(&self) {
+        self.zoom.set((1.0, 0.0));
+        self.set_offset(0.0, 0.0);
+    }
+
+    /// Gambar `paint` diperbesar/diperkecil `scale` kali di sekitar (`cx`, `cy`), di atas
+    /// transformasi yang sedang berlaku (misal ubin shelf yang muncul atau disorot).
+    fn scaled(&self, cx: f32, cy: f32, scale: f32, paint: impl FnOnce()) {
+        if (scale - 1.0).abs() < 0.001 {
+            paint();
+            return;
+        }
+        unsafe {
+            let mut current = Matrix3x2::default();
+            self.target.GetTransform(&mut current);
+            let local = Matrix3x2 { M11: scale, M12: 0.0, M21: 0.0, M22: scale, M31: cx * (1.0 - scale), M32: cy * (1.0 - scale) };
+            self.target.SetTransform(&(local * current));
+            paint();
+            self.target.SetTransform(&current);
+        }
     }
 
     fn push_clip(&self, area: D2D_RECT_F) {
@@ -1365,6 +1650,11 @@ const fn rgb(hex: u32, a: f32) -> D2D1_COLOR_F {
 
 fn with_alpha(color: D2D1_COLOR_F, alpha: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F { a: color.a * alpha, ..color }
+}
+
+/// Campuran dua warna: `t` = 0 warna `from`, 1 warna `to`.
+fn blend(from: D2D1_COLOR_F, to: D2D1_COLOR_F, t: f32) -> D2D1_COLOR_F {
+    D2D1_COLOR_F { r: lerp(from.r, to.r, t), g: lerp(from.g, to.g, t), b: lerp(from.b, to.b, t), a: lerp(from.a, to.a, t) }
 }
 
 /// Warna aksen sampul album, atau `fallback` kalau sampulnya tidak berwarna.

@@ -67,11 +67,6 @@ impl Shelf {
         self.clamp_scroll();
     }
 
-    pub fn clear(&mut self) {
-        self.items.clear();
-        self.scroll = 0;
-    }
-
     /// Buang file yang sudah dipindah/dihapus di luar notch. `true` kalau ada yang berubah.
     pub fn prune_missing(&mut self) -> bool {
         let before = self.items.len();

@@ -1,6 +1,7 @@
 //! Widget di panel notch. Modul-modul ini hanya berisi data dan aturannya (tanpa gambar
 //! dan tanpa API Windows), supaya mudah diuji.
 
+pub mod agenda;
 pub mod focus;
 pub mod shelf;
 pub mod tasks;

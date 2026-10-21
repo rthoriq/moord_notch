@@ -15,6 +15,7 @@ struct Sample {
     system: Stats,
     timer: TimerView,
     controls: ControlsView,
+    shelf_fx: ShelfFx,
 }
 
 fn sample() -> Sample {
@@ -30,13 +31,14 @@ fn sample() -> Sample {
         media: MediaView {
             title: "Kehilanganmu Berat Bagiku (judul yang panjang sekali)".into(),
             artist: "Kangen Band".into(),
-            source: "Spotify".into(),
             playing: true,
             progress: Some(0.38),
             elapsed: "1:06".into(),
             remaining: "-1:37".into(),
             can_previous: true,
             can_next: false,
+            can_seek: true,
+            seeking: false,
             accent: Some(0x4FC3F7),
         },
         shelf,
@@ -69,6 +71,7 @@ fn sample() -> Sample {
             up: 81_920.0,
         },
         timer: idle_timer(),
+        shelf_fx: ShelfFx::default(),
         controls: ControlsView {
             volume: Some((0.62, false)),
             brightness: Some(70),
@@ -100,6 +103,18 @@ struct State<'a> {
     pages: Pages,
     weather: Option<&'a str>,
     city_draft: Option<&'a str>,
+    /// Ukuran lain dari ukuran bawaan bentuknya (misal pil yang disentuh kursor).
+    size: Option<(f32, f32)>,
+    shadow: Option<f32>,
+    fx: Option<&'a ShelfFx>,
+    roll: Option<&'a Roll>,
+    calendar: Option<&'a CalendarView>,
+    agenda_draft: Option<&'a str>,
+    download: Option<&'a str>,
+    battery: Option<(u32, bool)>,
+    lyrics: Option<&'a LyricsView>,
+    lyric_mix: f32,
+    lyrics_button: Option<bool>,
 }
 
 impl<'a> State<'a> {
@@ -119,7 +134,58 @@ impl<'a> State<'a> {
             pages: Pages::default(),
             weather: None,
             city_draft: None,
+            size: None,
+            shadow: None,
+            fx: None,
+            roll: None,
+            calendar: None,
+            agenda_draft: None,
+            download: None,
+            battery: Some((81, false)),
+            lyrics: None,
+            lyric_mix: 0.0,
+            lyrics_button: None,
         }
+    }
+}
+
+/// Lirik contoh (karangan sendiri) dengan baris ketiga sedang dinyanyikan.
+fn sample_lyrics(scroll: f32) -> LyricsView {
+    LyricsView {
+        lines: [
+            "Langit sore memudar pelan".into(),
+            "Kau tersenyum di ujung jalan".into(),
+            "Dan semua lagu terasa milik kita berdua malam ini".into(),
+            "Jangan pergi dulu, tunggu sebentar".into(),
+            "Bintang pun ikut bernyanyi".into(),
+        ],
+        scroll,
+        status: None,
+    }
+}
+
+/// Kalender contoh: Selasa 20 Oktober 2026 dipilih dan hari ini, tiga agenda.
+fn sample_calendar() -> CalendarView {
+    let names = ["Sab", "Min", "Sen", "Sel", "Rab"];
+    CalendarView {
+        month: "Okt".into(),
+        year: "2026".into(),
+        days: (0..5)
+            .map(|i| DayView {
+                offset: i - 2,
+                name: names[i as usize],
+                number: 18 + i as u32,
+                today: i == 2,
+                selected: i == 2,
+                has_events: i == 2 || i == 4,
+            })
+            .collect(),
+        events: vec![
+            AgendaItem { id: 1, time: String::new(), text: "Ulang tahun Ibu".into(), done: false },
+            AgendaItem { id: 2, time: "09.00".into(), text: "Rapat tim".into(), done: false },
+            AgendaItem { id: 3, time: "15.30".into(), text: "Beli kado".into(), done: true },
+        ],
+        scroll: 0,
     }
 }
 
@@ -177,6 +243,26 @@ fn preview_states() {
         quiet_minutes: Some(42),
         city: None,
     };
+    let targeted = ShelfFx { targeted: true, dash: 1.3, ..ShelfFx::default() };
+    let sharing = ShelfFx { share_targeted: true, dash: 2.2, ..ShelfFx::default() };
+    let waiting = ShelfFx { targeted: false, dash: 3.1, ..ShelfFx::default() };
+    let dropped = ShelfFx {
+        glow: Some(0.3),
+        tiles: [(3u64, (0.8f32, 0.7f32)), (1, (0.75, 0.5))].into_iter().collect(),
+        ..ShelfFx::default()
+    };
+    let no_fx = ShelfFx::default();
+    let roll = Roll { from: "61".into(), t: 0.45, up: true };
+    let charging = Hud::Power { plugged: true, percent: Some(80), low: false };
+    let calendar = sample_calendar();
+    let mut other_day = sample_calendar();
+    other_day.days.iter_mut().for_each(|d| d.selected = d.offset == 2);
+    other_day.events.clear();
+    let lyrics = sample_lyrics(1.0);
+    let lyrics_scrolling = sample_lyrics(0.4);
+    let searching = LyricsView { lines: Default::default(), scroll: 1.0, status: Some("Mencari lirik…") };
+    let seeking = MediaView { seeking: true, progress: Some(0.62), elapsed: "1:46".into(), remaining: "-1:07".into(), ..sample().media };
+    let agenda_due = Hud::Agenda { text: "Rapat tim".into(), time: "09.00".into() };
     let message_locked =
         Hud::Message {
         app: String::new(),
@@ -199,7 +285,17 @@ fn preview_states() {
         State { hud: Some(&camera), ..State::new("hud_camera", View::Hud, Page::Home) },
         State { hovered: Some(Hit::PageNext), ..State::new("page_clock", View::Panel, Page::Home) },
         State { media: true, hovered: Some(Hit::Media(Button::PlayPause)), ..State::new("page_media", View::Panel, Page::Home) },
-        State { media: true, lyric: Some(lyric), ..State::new("page_media_lyric", View::Panel, Page::Home) },
+        State { media: true, lyrics_button: Some(false), hovered: Some(Hit::MediaSeek), ..State::new("player_seek_hover", View::Panel, Page::Home) },
+        State { media: true, lyrics_button: Some(false), hovered: Some(Hit::LyricsToggle), ..State::new("player_lyrics_button", View::Panel, Page::Home) },
+        State { media: true, lyrics_button: Some(true), lyrics: Some(&lyrics), lyric_mix: 1.0, ..State::new("player_lyrics", View::PanelWide, Page::Home) },
+        State { media: true, lyrics_button: Some(true), lyrics: Some(&lyrics), lyric_mix: 0.5, size: Some((560.0, 156.0)), ..State::new("player_lyrics_growing", View::PanelWide, Page::Home) },
+        State { media: true, lyrics_button: Some(true), lyrics: Some(&lyrics_scrolling), lyric_mix: 1.0, ..State::new("player_lyrics_scroll", View::PanelWide, Page::Home) },
+        State { media: true, lyrics_button: Some(true), lyrics: Some(&searching), lyric_mix: 1.0, ..State::new("player_lyrics_searching", View::PanelWide, Page::Home) },
+        State { media: true, lyrics_button: Some(true), calendar: Some(&calendar), lyrics: Some(&lyrics), lyric_mix: 1.0, weather: Some("29° Cerah"), ..State::new("player_lyrics_calendar", View::PanelWide, Page::Home) },
+        State { media: true, lyrics_button: Some(true), calendar: Some(&calendar), lyrics: Some(&lyrics), lyric_mix: 0.45, ..State::new("player_lyrics_swap", View::PanelWide, Page::Home) },
+        State { theme: Theme::Glass, media: true, lyrics_button: Some(true), lyrics: Some(&lyrics), lyric_mix: 1.0, ..State::new("player_lyrics_glass", View::PanelWide, Page::Home) },
+        State { theme: Theme::Light, media: true, lyrics_button: Some(true), lyrics: Some(&lyrics), lyric_mix: 1.0, ..State::new("player_lyrics_light", View::PanelWide, Page::Home) },
+        State { media: true, battery: Some((64, true)), ..State::new("player_charging", View::Panel, Page::Home) },
         State { hovered: Some(Hit::ShelfItem(2)), ..State::new("page_shelf", View::Panel, Page::Shelf) },
         State { hovered: Some(Hit::FocusReset), ..State::new("page_focus", View::Panel, Page::Focus) },
         State { hovered: Some(Hit::WaterDrink), ..State::new("page_water", View::Panel, Page::Water) },
@@ -211,7 +307,6 @@ fn preview_states() {
         State { theme: Theme::Light, hovered: Some(Hit::TaskToggle(0)), ..State::new("theme_light", View::Panel, Page::Tasks) },
         State { theme: Theme::Light, ..State::new("theme_light_pill", View::Pill, Page::Home) },
         State { media: true, lyric: Some(long_lyric), ..State::new("pill_lyric_long", View::LyricPill, Page::Home) },
-        State { media: true, lyric: Some(long_lyric), ..State::new("page_media_lyric_long", View::Panel, Page::Home) },
         State { hud: Some(&brightness), ..State::new("hud_brightness", View::Hud, Page::Home) },
         State { hud: Some(&caps), ..State::new("hud_capslock", View::Hud, Page::Home) },
         State { hud: Some(&num), ..State::new("hud_numlock", View::Hud, Page::Home) },
@@ -242,6 +337,22 @@ fn preview_states() {
         State::new("pill_timer", View::Pill, Page::Home),
         State { hud: Some(&timer_done), ..State::new("hud_timer", View::Hud, Page::Home) },
         State { weather: Some("28° Mendung · Jakarta"), ..State::new("page_clock_weather", View::Panel, Page::Home) },
+        State { size: Some((188.0, 34.0)), shadow: Some(0.6), ..State::new("pill_peek", View::Pill, Page::Home) },
+        State { fx: Some(&waiting), ..State::new("drop_waiting", View::Panel, Page::Shelf) },
+        State { fx: Some(&targeted), ..State::new("drop_targeted", View::Panel, Page::Shelf) },
+        State { fx: Some(&dropped), ..State::new("shelf_dropped", View::Panel, Page::Shelf) },
+        State { hud: Some(&volume), roll: Some(&roll), ..State::new("strip_volume", View::Strip, Page::Home) },
+        State { hud: Some(&brightness), ..State::new("strip_brightness", View::Strip, Page::Home) },
+        State { hud: Some(&caps), ..State::new("strip_capslock", View::Strip, Page::Home) },
+        State { hud: Some(&charging), ..State::new("strip_power", View::Strip, Page::Home) },
+        State { hud: Some(&volume), roll: Some(&roll), ..State::new("hud_volume_roll", View::Hud, Page::Home) },
+        State { media: true, calendar: Some(&calendar), weather: Some("29° Cerah"), ..State::new("home_wide_media", View::PanelWide, Page::Home) },
+        State { calendar: Some(&calendar), hovered: Some(Hit::AgendaRow(2)), ..State::new("home_wide_clock", View::PanelWide, Page::Home) },
+        State { calendar: Some(&other_day), agenda_draft: Some("09.00 Rap"), battery: Some((34, true)), ..State::new("home_wide_typing", View::PanelWide, Page::Home) },
+        State { hud: Some(&agenda_due), ..State::new("hud_agenda", View::Hud, Page::Home) },
+        State { download: Some("12,4 MB"), size: Some((236.0, 30.0)), ..State::new("pill_download", View::Pill, Page::Home) },
+        State { fx: Some(&sharing), ..State::new("drop_share", View::Panel, Page::Shelf) },
+        State { media: true, lyrics_button: Some(false), ..State::new("player_seeking", View::Panel, Page::Home) },
     ];
     for state in states {
         let mut renderer = Renderer::new(state.dpi, state.theme).unwrap();
@@ -251,9 +362,15 @@ fn preview_states() {
         // Ubin kedua shelf diberi thumbnail tiruan, sisanya memakai ikon.
         renderer.set_thumbnail(&Thumbnail { id: 2, width: 64, height: 40, pixels: gradient(64, 40) });
         data.tasks.draft = (state.name == "page_tasks_150").then(|| "Siapkan materi rapat".into());
-        let (width, height) = match (state.view, state.lyric) {
-            (View::LyricPill, Some(line)) => renderer.lyric_size(line),
+        let (width, height) = match (state.view, state.lyric, state.size) {
+            (_, _, Some(size)) => size,
+            (View::LyricPill, Some(line), _) => renderer.lyric_size(line),
             _ => state.view.size(),
+        };
+        data.shelf.drop_hover = state.name.starts_with("drop");
+        let fill = match state.hud {
+            Some(Hud::Volume { level, .. } | Hud::Brightness { level }) => *level,
+            _ => 0.0,
         };
         let mut alpha = [0.0; CONTENTS];
         if let Some(i) = state.view.content() {
@@ -264,16 +381,26 @@ fn preview_states() {
             height,
             alpha,
             eyes: state.eyes,
+            shadow: state.shadow.unwrap_or(if state.view.is_panel() { 1.0 } else { 0.0 }),
             time: "19:21",
             date: "Senin, 19 Oktober 2026",
+            day: "Rab 21 Okt 2026",
             greeting: "Selamat malam",
-            media: state.media.then_some(&data.media),
+            battery: state.battery,
+            media: state.media.then_some(if state.name == "player_seeking" { &seeking } else { &data.media }),
             lyric: state.lyric,
+            lyrics: state.lyrics,
+            lyric_mix: state.lyric_mix,
+            lyrics_button: state.lyrics_button,
             hud: state.hud,
+            hud_compact: state.view == View::Strip,
+            hud_roll: state.roll,
+            hud_fill: fill,
             page: state.page,
             pages: state.pages,
             page_from: None,
             shelf: &data.shelf,
+            shelf_fx: state.fx.unwrap_or(&no_fx),
             tasks: &data.tasks,
             focus: if state.name.starts_with("mood") || state.name == "size_small" { &idle } else { &data.focus },
             water: &data.water,
@@ -287,6 +414,9 @@ fn preview_states() {
             controls: if state.name.ends_with("muted") { &muted_controls } else { &data.controls },
             weather: state.weather,
             city_draft: state.city_draft,
+            calendar: state.calendar,
+            agenda_draft: state.agenda_draft,
+            download: state.download,
         };
         renderer.draw(&scene).unwrap();
         let _ = unsafe { GdiFlush() };
@@ -306,16 +436,26 @@ fn scene_for<'a>(data: &'a Sample, view: View, page: Page, media: bool) -> Scene
         height,
         alpha,
         eyes: Eyes::default(),
+        shadow: 0.0,
         time: "19:21",
         date: "",
+        day: "Rab 21 Okt 2026",
         greeting: "",
+        battery: None,
         media: media.then_some(&data.media),
         lyric: None,
+        lyrics: None,
+        lyric_mix: 0.0,
+        lyrics_button: None,
         hud: None,
+        hud_compact: false,
+        hud_roll: None,
+        hud_fill: 0.0,
         page,
         pages: Pages::default(),
         page_from: None,
         shelf: &data.shelf,
+        shelf_fx: &data.shelf_fx,
         tasks: &data.tasks,
         focus: &data.focus,
         water: &data.water,
@@ -329,6 +469,9 @@ fn scene_for<'a>(data: &'a Sample, view: View, page: Page, media: bool) -> Scene
         controls: &data.controls,
         weather: None,
         city_draft: None,
+        calendar: None,
+        agenda_draft: None,
+        download: None,
     }
 }
 
@@ -357,7 +500,7 @@ fn eye_patch_covers_every_expression() {
 
             scene.eyes = Eyes::default();
             renderer.draw(&scene).unwrap();
-            renderer.draw_eyes(*eyes).unwrap();
+            renderer.draw_eyes(176.0, 30.0, *eyes).unwrap();
             let _ = unsafe { GdiFlush() };
             let patched = renderer.surface.pixels();
             let worst = full
@@ -369,6 +512,44 @@ fn eye_patch_covers_every_expression() {
             assert!(worst <= 2, "mata {eyes:?} pada {dpi} DPI keluar dari kotaknya (selisih {worst})");
         }
     }
+}
+
+/// Bayangan hanya jatuh di bawah notch: di samping notch (di bawah lengkung atasnya) tidak boleh
+/// ada pita gelap, karena terlihat seperti kotak di balik notch.
+#[test]
+fn shadow_only_below_notch() {
+    let data = sample();
+    let mut renderer = Renderer::new(96, Theme::Black).unwrap();
+    let mut scene = scene_for(&data, View::Panel, Page::Home, false);
+    scene.shadow = 1.0;
+    renderer.draw(&scene).unwrap();
+    let _ = unsafe { GdiFlush() };
+    let width = renderer.surface.width as usize;
+    let (w, h) = View::Panel.size();
+    let x0 = (CANVAS.0 / 2.0 - w / 2.0) as usize;
+    let pixels = renderer.surface.pixels();
+    let alpha = |x: usize, y: usize| pixels[y * width + x] >> 24;
+    for y in (FLARE_MAX as usize + 2)..(h as usize - 2) {
+        for x in (x0 - 12)..(x0 - 1) {
+            assert_eq!(alpha(x, y), 0, "piksel ({x}, {y}) di samping notch tidak transparan");
+        }
+    }
+    assert!(alpha((CANVAS.0 / 2.0) as usize, h as usize + 4) > 0, "bayangan di bawah notch ada");
+
+    // Badan tema kaca tembus pandang: bayangan tidak boleh terlihat di dalam panel.
+    let mut glass = Renderer::new(96, Theme::Glass).unwrap();
+    let mut frame = |shadow: f32| {
+        let mut scene = scene_for(&data, View::Panel, Page::Home, false);
+        scene.shadow = shadow;
+        glass.draw(&scene).unwrap();
+        let _ = unsafe { GdiFlush() };
+        glass.surface.pixels().to_vec()
+    };
+    let (plain, shaded) = (frame(0.0), frame(1.0));
+    let inside = (0..h as usize).flat_map(|y| (0..width).map(move |x| y * width + x));
+    assert!(inside.clone().all(|i| plain[i] == shaded[i]), "bayangan terlihat di balik badan kaca");
+    let below = h as usize * width + width / 2;
+    assert_ne!(plain[below + 4 * width], shaded[below + 4 * width], "bayangan di bawah notch kaca ada");
 }
 
 /// Pil lirik melebar mengikuti barisnya, lalu jadi dua baris kalau masih tidak muat.
@@ -398,6 +579,105 @@ fn hits_follow_drawing() {
 }
 
 const MARGIN_FOR_TEST: f32 = 32.0;
+
+/// Tombol lirik, bar lagu, dan tombol putar bisa diklik di tempat yang terlihat; bar lagu
+/// mengubah posisi klik jadi posisi lagu.
+#[test]
+fn player_hits() {
+    let data = sample();
+    let renderer = Renderer::new(96, Theme::Black).unwrap();
+    let width = View::Panel.size().0;
+    let x0 = CANVAS.0 / 2.0 - width / 2.0;
+    let (l, r) = (x0 + MARGIN_FOR_TEST, x0 + width - MARGIN_FOR_TEST);
+    let mut scene = scene_for(&data, View::Panel, Page::Home, true);
+    scene.lyrics_button = Some(false);
+    renderer.draw(&scene).unwrap();
+    assert_eq!(renderer.hit_at(l + 10.0, 125.0), Some(Hit::LyricsToggle));
+    assert_eq!(renderer.hit_at((l + r) / 2.0, 125.0), Some(Hit::Media(Button::PlayPause)));
+    assert_eq!(renderer.hit_at((l + r) / 2.0, 101.0), Some(Hit::MediaSeek));
+    let start = renderer.slider_value(Hit::MediaSeek, l + 42.0).unwrap();
+    let end = renderer.slider_value(Hit::MediaSeek, r - 48.0).unwrap();
+    assert!(start < 0.01 && end > 0.99, "bar lagu {start}..{end}");
+
+    // Fitur lirik mati: tombolnya tidak ada. Aplikasi yang tidak bisa lompat: bar tidak bisa diklik.
+    let fixed = MediaView { can_seek: false, ..sample().media };
+    let mut scene = scene_for(&data, View::Panel, Page::Home, true);
+    scene.media = Some(&fixed);
+    renderer.draw(&scene).unwrap();
+    assert_eq!(renderer.hit_at(l + 10.0, 125.0), None);
+    assert_eq!(renderer.hit_at((l + r) / 2.0, 101.0), None);
+}
+
+/// Lirik menggantikan kalender: setelah bergeser penuh, kalender tidak bisa diklik lagi;
+/// selama bergeser, kolom kanan tidak bisa diklik sama sekali.
+#[test]
+fn lyrics_replace_calendar() {
+    let data = sample();
+    let calendar = sample_calendar();
+    let lyrics = sample_lyrics(1.0);
+    let renderer = Renderer::new(96, Theme::Black).unwrap();
+    let width = View::PanelWide.size().0;
+    let x1 = CANVAS.0 / 2.0 + width / 2.0;
+    // Hari ketiga deretan kalender (di tengah kolom kanan), dan baris agenda pertama.
+    let day = (x1 - MARGIN_FOR_TEST - 100.0, 63.0);
+    let mut scene = scene_for(&data, View::PanelWide, Page::Home, true);
+    scene.calendar = Some(&calendar);
+    scene.lyrics = Some(&lyrics);
+    for (mix, expected) in [(0.0, true), (0.5, false), (1.0, false)] {
+        scene.lyric_mix = mix;
+        renderer.draw(&scene).unwrap();
+        let hit = renderer.hit_at(day.0, day.1);
+        assert_eq!(matches!(hit, Some(Hit::CalendarDay(_))), expected, "geser {mix}: {hit:?}");
+    }
+}
+
+/// Pendaran bawah panel mengikuti warna sampul, dan tidak ada tanpa musik.
+#[test]
+fn glow_follows_album_colour() {
+    let data = sample();
+    let (_, h) = View::Panel.size();
+    let probe = |media: bool| {
+        let mut renderer = Renderer::new(96, Theme::Black).unwrap();
+        renderer.draw(&scene_for(&data, View::Panel, Page::Home, media)).unwrap();
+        let _ = unsafe { GdiFlush() };
+        let width = renderer.surface.width as usize;
+        // Sedikit di atas tepi bawah, di kiri tengah (bukan di atas tombol atau titik halaman).
+        let x = (CANVAS.0 / 2.0 - 120.0) as usize;
+        renderer.surface.pixels()[(h as usize - 6) * width + x]
+    };
+    let channel = |px: u32, shift: u32| (px >> shift) & 0xFF;
+    let (plain, glowing) = (probe(false), probe(true));
+    assert_eq!(channel(plain, 0), 0, "tanpa musik badan tetap hitam");
+    // Sampul contoh biru muda (0x4FC3F7): biru paling kuat, merah paling lemah.
+    assert!(channel(glowing, 0) > 30 && channel(glowing, 0) > channel(glowing, 16), "pendaran {glowing:08X}");
+}
+
+/// Tombol × agenda harus bisa dicapai: kursor yang bergerak dari lingkaran melewati teks baris
+/// tetap menyorot baris itu, sehingga × di ujung kanan tidak hilang sebelum diklik.
+#[test]
+fn agenda_remove_reachable() {
+    let data = sample();
+    let calendar = sample_calendar();
+    let renderer = Renderer::new(96, Theme::Black).unwrap();
+    let width = View::PanelWide.size().0;
+    let x0 = CANVAS.0 / 2.0 - width / 2.0;
+    // Kolom kalender: sesudah kolom kiri Beranda (356) dan jarak 24.
+    let (l, r) = (x0 + MARGIN_FOR_TEST + 356.0 + 24.0, x0 + width - MARGIN_FOR_TEST);
+    let y = 92.0;
+    let mut scene = scene_for(&data, View::PanelWide, Page::Home, false);
+    scene.calendar = Some(&calendar);
+    renderer.draw(&scene).unwrap();
+    assert_eq!(renderer.hit_at(l + 6.0, y), Some(Hit::AgendaToggle(1)));
+    assert_eq!(renderer.hit_at(l + 80.0, y), Some(Hit::AgendaRow(1)));
+    assert_eq!(renderer.hit_at(r - 8.0, y), Some(Hit::AgendaRow(1)));
+    assert_eq!(renderer.hit_at(r - 8.0, y + 16.0), Some(Hit::AgendaRow(2)));
+    // Baris disorot: × muncul di tempat jam dan bisa diklik, baris lain tidak terpengaruh.
+    scene.hovered = Some(Hit::AgendaRow(1));
+    renderer.draw(&scene).unwrap();
+    assert_eq!(renderer.hit_at(r - 8.0, y), Some(Hit::AgendaRemove(1)));
+    assert_eq!(renderer.hit_at(l + 80.0, y), Some(Hit::AgendaRow(1)));
+    assert_eq!(renderer.hit_at(r - 8.0, y + 16.0), Some(Hit::AgendaRow(2)));
+}
 
 /// Bandingkan biaya satu frame penuh dengan gambar ulang gelombang saja.
 /// Jalankan dengan `cargo test --release -- --ignored --nocapture`.

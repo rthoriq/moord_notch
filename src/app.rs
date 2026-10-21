@@ -1,6 +1,7 @@
 //! Jendela notch: status, input mouse/keyboard, timer, dan loop pesan.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -17,7 +18,7 @@ use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::System::RemoteDesktop::{
     NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
 };
-use windows::Win32::System::Threading::Sleep;
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId, Sleep};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, MOD_ALT, MOD_NOREPEAT, MOD_WIN, RegisterHotKey, ReleaseCapture, SetCapture, SetFocus,
@@ -28,7 +29,8 @@ use windows::Win32::UI::Input::{
     RIDEV_REMOVE, RIM_TYPEKEYBOARD, RegisterRawInputDevices,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, WM_HOTKEY,
+    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetWindowThreadProcessId,
+    WM_HOTKEY,
     GWL_EXSTYLE, GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowLongPtrW,
     HWND_TOPMOST, IDC_ARROW, IDC_HAND, IsWindow, KillTimer, LoadCursorW, MA_NOACTIVATE, MSG,
     PBT_APMRESUMEAUTOMATIC, PBT_POWERSETTINGCHANGE, PM_REMOVE, PeekMessageW, PostMessageW,
@@ -45,26 +47,27 @@ use windows::core::{Error, PCWSTR, Result, w};
 
 use crate::anim::Spring;
 use crate::desktop::{self, Mode, Watcher};
-use crate::dragdrop::{self, DRAG_DROP, DRAG_ENTER, DRAG_LEAVE, DropRegistration};
+use crate::dragdrop::{self, DRAG_DROP, DRAG_ENTER, DRAG_LEAVE, DRAG_OVER, DropRegistration};
 use crate::lyrics::{self, Lyrics};
 use crate::media::{self, Snapshot};
 use crate::power::{self, Power};
 use crate::privacy::Usage;
 use crate::render::{
-    self, Button, CONTENTS, ControlsView, Eyes, FocusView, Hit, Hud, MediaView, Mood, Renderer, Scene, TimerView, View,
-    WaterView,
+    self, AgendaItem, Button, CONTENTS, CalendarView, ControlsView, DayView, Eyes, FocusView, Hit, Hud, LyricsView,
+    MediaView, Mood, Renderer, Roll, Scene, ShelfFx, TimerView, View, WaterView, hud_value,
 };
 use crate::services::{self, Event, Services, Task};
 use crate::settings::{Messages, Settings, Size};
 use crate::sound::{self, Sound};
 use crate::folders::{self, Watch};
-use crate::{messages, network};
+use crate::{messages, network, share};
 use crate::sysinfo::Stats;
 use crate::tray::{self, Command, MenuState, PageCommand, PageMenu, Tray};
 use crate::widgets::Page;
 use crate::widgets::focus::{self, Focus};
 use crate::widgets::shelf::{self, Shelf};
 use crate::widgets::tasks::{self, Tasks};
+use crate::widgets::agenda::{self, Agenda, Date};
 use crate::widgets::timer::{self, Timer};
 use crate::widgets::water::{GOAL_ML, Water};
 use crate::weather::{self, City, Weather};
@@ -105,7 +108,7 @@ const HOTKEY_ID: i32 = 1;
 
 const POLL_MS: u32 = 1_000;
 /// Jeda sebelum membuka, supaya tidak terbuka saat kursor hanya lewat menuju tab browser.
-const OPEN_DELAY_MS: u32 = 140;
+const OPEN_DELAY_MS: u32 = 200;
 const CLOSE_DELAY_MS: u32 = 380;
 /// Setelah file dilepas, panel tetap terbuka sebentar supaya hasilnya terlihat.
 const DROP_CLOSE_MS: u32 = 2_500;
@@ -115,6 +118,19 @@ const BLINK_SECS: f64 = 0.16;
 const PAGE_ANIM_SECS: f64 = 0.24;
 /// Selisih ukuran (DIP) yang sudah tidak terlihat; di bawahnya animasi bentuk dianggap selesai.
 const SHAPE_PRECISION: f32 = 0.05;
+/// Seperti notch di Mac: membuka sedikit memantul, menutup mulus tanpa pantulan.
+const OPEN_BOUNCE: f32 = 0.72;
+const CLOSE_BOUNCE: f32 = 1.0;
+/// Animasi shelf: ubin baru muncul, ubin dihapus menghilang, pendaran sesudah file dilepas.
+const TILE_IN_SECS: f64 = 0.4;
+const TILE_OUT_SECS: f64 = 0.22;
+const GLOW_SECS: f64 = 0.7;
+/// Lama angka kabar bergulir ke nilai baru.
+const ROLL_SECS: f64 = 0.22;
+/// Garis putus-putus area lepas berjalan selama file diseret (~25 gambar per detik).
+const DASH_MS: u32 = 40;
+/// Pil yang disentuh kursor langsung sedikit membesar sebelum panel terbuka.
+const PEEK_GROW: (f32, f32) = (12.0, 4.0);
 
 const VOLUME_HUD_MS: u32 = 1_600;
 const POWER_HUD_MS: u32 = 3_000;
@@ -139,6 +155,16 @@ const GAZE_REST: Duration = Duration::from_secs(30);
 /// Lama ekspresi sementara setelah kabarnya hilang.
 const MOOD_MS: u32 = 5_000;
 const TIMER_HUD_MS: u32 = 8_000;
+const AGENDA_HUD_MS: u32 = 8_000;
+/// Geser dua jari di pil sejauh ini (satuan roda mouse) untuk pindah lagu, dan jeda minimal
+/// antar-pindah supaya satu gerakan tidak melompati beberapa lagu.
+const SWIPE_DISTANCE: i32 = 240;
+const SWIPE_COOLDOWN: f64 = 0.7;
+/// Pil melebar ke kanan selama ada unduhan, untuk ukuran file yang sedang diunduh.
+const DOWNLOAD_GROW: f32 = 60.0;
+/// Maskot bangun: mata terpejam sebentar, lalu terbuka perlahan.
+const WAKE_CLOSED_SECS: f64 = 0.3;
+const WAKE_OPEN_SECS: f64 = 0.45;
 const WEATHER_EVERY_MS: u32 = 30 * 60 * 1_000;
 /// Cuaca yang lebih tua dari ini tidak ditampilkan lagi.
 const WEATHER_STALE: Duration = Duration::from_secs(3 * 60 * 60);
@@ -148,8 +174,8 @@ const CITY_MAX: usize = 40;
 /// Gelombang di pil digambar ulang ~12 kali per detik: cukup hidup, nyaris tanpa beban CPU.
 const WAVE_MS: u32 = 80;
 const PROGRESS_MS: u32 = 1_000;
-/// Halaman musik dengan lirik diperbarui lebih rapat supaya pergantian baris tepat waktu.
-const LYRIC_MS: u32 = 250;
+/// Lama kolom lirik bergulir ke baris berikutnya.
+const LYRIC_SCROLL_SECS: f64 = 0.38;
 /// Hitung mundur di halaman pomodoro; lebih rapat dari sedetik supaya angkanya tidak meloncat.
 const FOCUS_TICK_MS: u32 = 500;
 /// Cincin pomodoro di pil cukup diperbarui sesekali.
@@ -204,6 +230,7 @@ pub fn run() -> Result<()> {
         let mut app = App::new(hwnd)?;
         app.mode = desktop::current_mode(hwnd, app.monitor, &app.monitor_rect);
         app.apply_visibility();
+        app.wake_up();
         app.refresh();
         app.schedule_clock();
         app.set_timer(TIMER_POLL, POLL_MS);
@@ -333,6 +360,17 @@ struct App {
     lyric_pending: Option<String>,
     /// Baris lirik yang terakhir digambar, untuk tahu kapan perlu gambar ulang.
     lyric_shown: Option<usize>,
+    /// Kolom kanan Beranda: 0 = kalender, 1 = lirik (bergeser halus di antaranya).
+    lyric_mix: f32,
+    /// Kolom lirik mulai bergulir ke baris berikutnya pada waktu ini.
+    lyric_scroll: Option<f64>,
+    /// Baris kolom lirik (-1 = sebelum baris pertama) dan detik lagu yang terakhir digambar.
+    lyric_drawn: Option<isize>,
+    second_drawn: Option<u64>,
+    /// Posisi bar progres lagu (0..1) yang sedang diseret.
+    seek_preview: Option<f32>,
+    /// Bentuk berpindah antara dua ukuran panel (misal kolom lirik masuk): isinya tetap tampil.
+    panel_resize: bool,
     system: Option<Stats>,
     /// Thread layanan sedang diminta mengukur sistem.
     system_watch: bool,
@@ -352,6 +390,23 @@ struct App {
     messages_denied: bool,
     /// Pintasan Win+Alt+N terdaftar.
     hotkey: bool,
+    /// Kursor menyentuh pil: pil sedikit membesar sebelum panel terbuka.
+    peek: bool,
+    /// Zona lepas yang sedang berada tepat di bawah file yang diseret.
+    drop_over: Option<DropZone>,
+    /// Jendela Bagikan Windows; dibuat saat pertama dipakai.
+    share: Option<share::Share>,
+    /// Kapan file terakhir dilepas, untuk pendaran.
+    drop_glow: Option<f64>,
+    /// Isi bilah kabar volume/kecerahan saat ini dan yang dituju (bergeser halus).
+    hud_fill: f32,
+    hud_fill_target: f32,
+    /// Angka kabar yang sedang bergulir: tulisan lama, mulai, naik/turun.
+    hud_roll: Option<(String, f64, bool)>,
+    /// Ubin shelf yang sedang muncul (`false`) atau menghilang (`true`), dan kapan mulainya.
+    tile_fx: HashMap<u64, (f64, bool)>,
+    /// Kekuatan bayangan saat ini (lihat [`Scene::shadow`]).
+    shadow: f32,
     /// Arah lirikan mata saat ini dan yang dituju (lihat [`Eyes::look`]).
     gaze: (f32, f32),
     gaze_target: (f32, f32),
@@ -370,6 +425,15 @@ struct App {
     screenshots: Option<Watch>,
     downloads: Option<Watch>,
     timer: Timer,
+    agenda: Agenda,
+    /// Hari yang dipilih di kalender, sebagai selisih dari hari ini.
+    cal_offset: i32,
+    /// Geseran dua jari di pil yang terkumpul, kapan terakhir bergeser, dan kapan terakhir pindah lagu.
+    swipe: (i32, f64, f64),
+    /// Kapan maskot mulai bangun (notch baru muncul, setelah buka kunci atau bangun dari tidur).
+    wake: Option<f64>,
+    /// Unduhan yang sedang berjalan: jumlah file dan total byte.
+    downloading: Option<(usize, u64)>,
     /// Volume speaker (0..1, bisu) dan bisu mikrofon terakhir, untuk halaman kontrol.
     volume: Option<(f32, bool)>,
     mic: Option<bool>,
@@ -457,6 +521,12 @@ impl App {
             lyrics: None,
             lyric_pending: None,
             lyric_shown: None,
+            lyric_mix: 0.0,
+            lyric_scroll: None,
+            lyric_drawn: None,
+            second_drawn: None,
+            seek_preview: None,
+            panel_resize: false,
             system: None,
             system_watch: false,
             target: (w, h),
@@ -467,6 +537,15 @@ impl App {
             messages_available: false,
             messages_denied: false,
             hotkey: false,
+            peek: false,
+            drop_over: None,
+            share: None,
+            drop_glow: None,
+            hud_fill: 0.0,
+            hud_fill_target: 0.0,
+            hud_roll: None,
+            tile_fx: HashMap::new(),
+            shadow: 0.0,
             gaze: (0.0, 0.0),
             gaze_target: (0.0, 0.0),
             cursor: POINT::default(),
@@ -478,6 +557,11 @@ impl App {
             screenshots: None,
             downloads: None,
             timer: Timer::default(),
+            agenda: Agenda::load(today()),
+            cal_offset: 0,
+            swipe: (0, 0.0, f64::MIN),
+            wake: Some(0.0),
+            downloading: None,
             volume: None,
             mic: None,
             slider_drag: None,
@@ -555,7 +639,7 @@ impl App {
                 return None;
             }
             WM_WTSSESSION_CHANGE => self.on_session_change(wparam.0 as u32),
-            dragdrop::WM_DRAG => self.on_drag(wparam.0),
+            dragdrop::WM_DRAG => self.on_drag(wparam.0, lparam),
             desktop::WM_DESKTOP_CHANGED => self.set_timer(TIMER_DESKTOP, DESKTOP_SETTLE_MS),
             desktop::WM_APPBAR => self.refresh_mode(false),
             services::WM_SERVICE => self.on_service(),
@@ -608,6 +692,8 @@ impl App {
             self.kill_timer(TIMER_CLOSE);
             if !self.expanded {
                 self.set_timer(TIMER_OPEN, OPEN_DELAY_MS);
+                self.peek = true;
+                self.refresh();
             }
         }
     }
@@ -615,6 +701,9 @@ impl App {
     fn on_leave(&mut self) {
         self.tracking_leave = false;
         self.hovering = false;
+        if std::mem::take(&mut self.peek) {
+            self.refresh();
+        }
         self.kill_timer(TIMER_OPEN);
         // Selama mengetik, panel tetap terbuka walau kursor pergi.
         if self.expanded && !self.editing() {
@@ -633,7 +722,7 @@ impl App {
                 unsafe { SetCapture(self.hwnd) };
             }
             // Slider langsung mengikuti kursor, lalu bisa diseret.
-            Some(slider @ (Hit::VolumeSlider | Hit::BrightnessSlider)) => {
+            Some(slider @ (Hit::VolumeSlider | Hit::BrightnessSlider | Hit::MediaSeek)) => {
                 self.slider_drag = Some(slider);
                 unsafe { SetCapture(self.hwnd) };
                 self.apply_slider(slider, lparam);
@@ -662,6 +751,8 @@ impl App {
                 self.brightness = Some(percent as u32);
                 self.services.send(Task::SetBrightness(percent));
             }
+            // Bar lagu hanya berpindah di layar selama diseret; lompatnya saat dilepas.
+            Hit::MediaSeek => self.seek_preview = Some(value),
             _ => return,
         }
         if !self.animating() {
@@ -670,8 +761,11 @@ impl App {
     }
 
     fn on_click(&mut self, lparam: LPARAM) {
-        if self.slider_drag.take().is_some() {
+        if let Some(slider) = self.slider_drag.take() {
             let _ = unsafe { ReleaseCapture() };
+            if slider == Hit::MediaSeek {
+                self.finish_seek();
+            }
             return;
         }
         // Klik biasa pada ubin shelf tidak melakukan apa-apa; buka dengan klik dua kali.
@@ -723,7 +817,8 @@ impl App {
             return;
         }
         let hit = self.hit_at(lparam);
-        if self.editing() && hit != Some(Hit::TaskInput) && hit != Some(Hit::CityInput) {
+        let typing_here = matches!(hit, Some(Hit::TaskInput | Hit::CityInput | Hit::AgendaInput));
+        if self.editing() && !typing_here {
             self.end_edit(true, true);
         }
         if let Some(hit) = hit {
@@ -739,14 +834,18 @@ impl App {
             Hit::PageNext => self.go_page(self.settings.pages.step(self.page, 1), 1.0),
             Hit::PageDot(page) => self.go_page(page, self.page_dir(page)),
             Hit::Media(button) => self.media_command(button),
+            Hit::LyricsToggle => {
+                self.start_motion();
+                self.settings.lyric_panel = !self.settings.lyric_panel;
+                self.settings.save();
+                self.request_lyrics();
+            }
+            // Ubin mengecil dan memudar dulu; baru dibuang dari shelf setelah animasinya selesai.
             Hit::ShelfClear => {
-                self.shelf.clear();
-                self.shelf_changed();
+                let ids: Vec<u64> = self.shelf.items.iter().map(|item| item.id).collect();
+                ids.into_iter().for_each(|id| self.fade_tile(id));
             }
-            Hit::ShelfRemove(id) => {
-                self.shelf.remove(id);
-                self.shelf_changed();
-            }
+            Hit::ShelfRemove(id) => self.fade_tile(id),
             Hit::FocusToggle => {
                 self.focus.toggle(now);
                 self.schedule_focus();
@@ -783,7 +882,7 @@ impl App {
                 self.tasks.remove(index);
                 self.tasks.save();
             }
-            Hit::TaskInput => self.begin_edit(false),
+            Hit::TaskInput => self.begin_edit(Field::Task),
             Hit::TasksClearDone => {
                 self.tasks.clear_done();
                 self.tasks.save();
@@ -799,7 +898,22 @@ impl App {
                     self.set_timer(TIMER_QUIET, QUIET.as_millis() as u32);
                 }
             }
-            Hit::CityInput => self.begin_edit(true),
+            Hit::CityInput => self.begin_edit(Field::City),
+            Hit::CalendarDay(offset) => {
+                self.cal_offset = offset;
+                self.agenda.scroll = 0;
+            }
+            Hit::AgendaToggle(id) => {
+                self.agenda.toggle(id);
+                self.agenda.save();
+            }
+            Hit::AgendaRemove(id) => {
+                self.agenda.remove(id);
+                self.agenda.save();
+                let count = self.agenda.on(self.selected_day()).len();
+                self.agenda.scroll_by(0, count);
+            }
+            Hit::AgendaInput => self.begin_edit(Field::Agenda),
             Hit::TimerPreset(minutes) => {
                 self.timer.start(minutes, now);
                 self.schedule_alarm();
@@ -816,7 +930,16 @@ impl App {
                 self.timer.cancel();
                 self.schedule_alarm();
             }
-            Hit::ShelfItem(_) | Hit::ShelfStrip | Hit::TaskList | Hit::VolumeSlider | Hit::BrightnessSlider => {}
+            Hit::ShelfItem(_)
+            | Hit::ShelfStrip
+            | Hit::TaskList
+            | Hit::VolumeSlider
+            | Hit::BrightnessSlider
+            | Hit::MediaSeek
+            | Hit::CalendarStrip
+            | Hit::AgendaList
+            | Hit::AgendaRow(_)
+            | Hit::DropShare => {}
         }
     }
 
@@ -840,6 +963,10 @@ impl App {
 
     /// Roda mouse: gulir shelf/daftar tugas kalau penuh, selain itu pindah halaman.
     fn on_wheel(&mut self, wparam: WPARAM, lparam: LPARAM, horizontal: bool) {
+        if !self.expanded && horizontal && !self.locked {
+            self.on_swipe(((wparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32);
+            return;
+        }
         if !self.expanded || self.locked {
             return;
         }
@@ -866,6 +993,17 @@ impl App {
             {
                 self.tasks.scroll_by(step)
             }
+            // Roda di atas deretan tanggal: geser hari (ke bawah/kanan = hari berikutnya).
+            Some(Hit::CalendarStrip | Hit::CalendarDay(_)) => {
+                self.cal_offset += step;
+                self.agenda.scroll = 0;
+            }
+            Some(Hit::AgendaList | Hit::AgendaRow(_) | Hit::AgendaToggle(_) | Hit::AgendaRemove(_))
+                if !horizontal && self.agenda.on(self.selected_day()).len() > agenda::VISIBLE =>
+            {
+                let count = self.agenda.on(self.selected_day()).len();
+                self.agenda.scroll_by(step, count);
+            }
             // Roda di atas slider: naik/turun 2%.
             Some(slider @ (Hit::VolumeSlider | Hit::BrightnessSlider)) if !horizontal => {
                 let current = match slider {
@@ -880,6 +1018,31 @@ impl App {
         }
         self.hovered = None;
         self.refresh();
+    }
+
+    /// Geser dua jari ke kanan/kiri di pil selama musik diputar: lagu berikutnya/sebelumnya.
+    fn on_swipe(&mut self, delta: i32) {
+        if !self.playing() {
+            return;
+        }
+        let now = self.now();
+        let (mut total, last, skipped) = self.swipe;
+        // Geseran yang terputus lama dianggap gerakan baru.
+        if now - last > 0.4 {
+            total = 0;
+        }
+        total += delta;
+        self.swipe = (total, now, skipped);
+        if total.abs() >= SWIPE_DISTANCE && now - skipped >= SWIPE_COOLDOWN {
+            self.swipe = (0, now, now);
+            self.media_command(if total > 0 { Button::Next } else { Button::Previous });
+        }
+    }
+
+    /// Mulai animasi maskot bangun.
+    fn wake_up(&mut self) {
+        self.start_motion();
+        self.wake = Some(self.now());
     }
 
     fn go_page(&mut self, page: Page, dir: f32) {
@@ -913,14 +1076,43 @@ impl App {
         self.services.send(Task::MediaCommand(command));
     }
 
+    /// Lompat ke posisi bar lagu yang dilepas; tampilan langsung pindah, aplikasinya menyusul.
+    fn finish_seek(&mut self) {
+        let Some(fraction) = self.seek_preview.take() else { return };
+        let Some(m) = self.media.as_mut().filter(|m| m.duration > 0.0) else { return };
+        let seconds = fraction as f64 * m.duration;
+        m.position = seconds;
+        m.at = Instant::now();
+        let ticks = ((m.start + seconds) * 1e7) as i64;
+        self.services.send(Task::MediaCommand(media::Command::Seek(ticks)));
+        // Baris lirik melompat ke posisi baru tanpa bergulir.
+        self.lyric_scroll = None;
+        self.refresh();
+    }
+
     fn shelf_changed(&mut self) {
         self.shelf.save();
         let shelf = &self.shelf;
         self.renderer.retain_thumbnails(|id| shelf.get(id).is_some());
     }
 
-    fn on_drag(&mut self, kind: usize) {
+    fn on_drag(&mut self, kind: usize, lparam: LPARAM) {
         match kind {
+            DRAG_OVER => {
+                // Area lepas baru menyala saat file tepat di atasnya.
+                let (x, y) = point(lparam);
+                let (pos, scale) = (self.window_pos(), self.renderer.scale());
+                let hit = self.renderer.hit_at((x - pos.x) as f32 / scale, (y - pos.y) as f32 / scale);
+                let over = match hit {
+                    Some(Hit::DropShare) => Some(DropZone::Share),
+                    Some(Hit::ShelfStrip | Hit::ShelfItem(_) | Hit::ShelfRemove(_)) => Some(DropZone::Shelf),
+                    _ => None,
+                };
+                if over == self.drop_over {
+                    return;
+                }
+                self.drop_over = over;
+            }
             DRAG_ENTER => {
                 // Shelf yang disembunyikan tidak menerima file.
                 if !self.settings.pages.shown(Page::Shelf) {
@@ -938,6 +1130,7 @@ impl App {
             }
             DRAG_LEAVE => {
                 self.shelf.drop_hover = false;
+                self.drop_over = None;
                 if self.expanded && !self.hovering {
                     self.set_timer(TIMER_CLOSE, CLOSE_DELAY_MS);
                 }
@@ -945,9 +1138,18 @@ impl App {
             DRAG_DROP => {
                 self.shelf.drop_hover = false;
                 let dropped = dragdrop::take_dropped();
+                // Dilepas di zona Bagikan: buka jendela Bagikan Windows, tidak masuk shelf.
+                if self.drop_over.take() == Some(DropZone::Share) {
+                    self.share_files(&dropped);
+                    self.refresh();
+                    return;
+                }
                 let added = if self.settings.pages.shown(Page::Shelf) { self.shelf.add(dropped) } else { Vec::new() };
                 if !added.is_empty() {
                     self.shelf.save();
+                    self.start_motion();
+                    self.drop_glow = Some(self.now());
+                    self.pop_tiles(&added);
                     self.services.thumbnails(added);
                 }
                 if !self.hovering {
@@ -957,6 +1159,41 @@ impl App {
             _ => {}
         }
         self.refresh();
+    }
+
+    /// Buka jendela Bagikan Windows untuk file yang dilepas di zona Bagikan.
+    fn share_files(&mut self, paths: &[std::path::PathBuf]) {
+        if self.share.is_none() {
+            self.share = share::Share::new(self.hwnd).inspect_err(|e| debug_log!("jendela Bagikan tidak tersedia: {e}")).ok();
+        }
+        let Some(share) = &self.share else { return };
+        // Windows hanya menampilkan jendela Bagikan untuk jendela yang sedang di depan, sedangkan
+        // notch biasanya tidak pernah aktif. Sesudah jendelanya muncul, notch kembali seperti biasa.
+        self.set_activatable(true);
+        bring_to_front(self.hwnd);
+        if let Err(e) = share.show(paths) {
+            debug_log!("jendela Bagikan gagal dibuka: {e}");
+        }
+        self.set_activatable(false);
+    }
+
+    /// Ubin baru muncul membesar.
+    fn pop_tiles(&mut self, added: &[(u64, std::path::PathBuf)]) {
+        self.start_motion();
+        let now = self.now();
+        for (id, _) in added {
+            self.tile_fx.insert(*id, (now, false));
+        }
+    }
+
+    /// Ubin mulai menghilang; dibuang dari shelf di `tick` setelah animasinya selesai.
+    fn fade_tile(&mut self, id: u64) {
+        if self.tile_fx.get(&id).is_some_and(|(_, removing)| *removing) {
+            return;
+        }
+        self.start_motion();
+        let now = self.now();
+        self.tile_fx.insert(id, (now, true));
     }
 
     fn drag_path(&self) -> Option<std::path::PathBuf> {
@@ -982,20 +1219,22 @@ impl App {
 
     /// Sedang mengetik tugas atau nama kota.
     fn editing(&self) -> bool {
-        self.tasks.draft.is_some() || self.city_draft.is_some()
+        self.tasks.draft.is_some() || self.city_draft.is_some() || self.agenda.draft.is_some()
     }
 
     /// Mulai mengetik tugas baru, atau nama kota cuaca (`city`). Notch sementara boleh
     /// menerima fokus keyboard.
-    fn begin_edit(&mut self, city: bool) {
+    fn begin_edit(&mut self, field: Field) {
         if self.editing() {
             return;
         }
-        if city {
-            self.city_draft = Some(String::new());
-            self.city_status = None;
-        } else {
-            self.tasks.draft = Some(String::new());
+        match field {
+            Field::Task => self.tasks.draft = Some(String::new()),
+            Field::City => {
+                self.city_draft = Some(String::new());
+                self.city_status = None;
+            }
+            Field::Agenda => self.agenda.draft = Some(String::new()),
         }
         self.pending_surrogate = None;
         self.edit_return = Some(unsafe { GetForegroundWindow() });
@@ -1009,9 +1248,15 @@ impl App {
     /// Selesai mengetik. `commit` menyimpan teksnya; `restore_focus` mengembalikan fokus ke
     /// aplikasi sebelumnya (tidak perlu kalau pengguna sendiri sudah pindah aplikasi).
     fn end_edit(&mut self, commit: bool, restore_focus: bool) {
-        let (task, city) = (self.tasks.draft.take(), self.city_draft.take());
-        if task.is_none() && city.is_none() {
+        let (task, city, event) = (self.tasks.draft.take(), self.city_draft.take(), self.agenda.draft.take());
+        if task.is_none() && city.is_none() && event.is_none() {
             return;
+        }
+        if commit
+            && let Some(event) = event
+            && self.agenda.add(self.selected_day(), &event)
+        {
+            self.agenda.save();
         }
         if commit
             && let Some(task) = task
@@ -1054,12 +1299,21 @@ impl App {
         }
         match unit {
             0x08 => {
-                if let Some(draft) = self.tasks.draft.as_mut().or(self.city_draft.as_mut()) {
+                if let Some(draft) = self.tasks.draft.as_mut().or(self.city_draft.as_mut()).or(self.agenda.draft.as_mut()) {
                     draft.pop();
                 }
             }
             // Enter di kotak kota: cari kotanya.
             0x0D if self.city_draft.is_some() => self.end_edit(true, true),
+            // Enter di kotak agenda: simpan lalu siap mengetik agenda berikutnya; kotak kosong menutup.
+            0x0D if self.agenda.draft.is_some() => {
+                let text = self.agenda.draft.replace(String::new()).unwrap_or_default();
+                if self.agenda.add(self.selected_day(), &text) {
+                    self.agenda.save();
+                } else {
+                    self.end_edit(false, true);
+                }
+            }
             0x0D => {
                 // Enter: simpan lalu siap mengetik tugas berikutnya; Enter di kotak kosong menutup.
                 let text = self.tasks.draft.replace(String::new()).unwrap_or_default();
@@ -1090,10 +1344,11 @@ impl App {
     }
 
     fn type_text(&mut self, text: &str) {
-        let (draft, max) = match (&mut self.tasks.draft, &mut self.city_draft) {
-            (Some(draft), _) => (draft, tasks::MAX_LEN),
-            (None, Some(draft)) => (draft, CITY_MAX),
-            (None, None) => return,
+        let (draft, max) = match (&mut self.tasks.draft, &mut self.city_draft, &mut self.agenda.draft) {
+            (Some(draft), _, _) => (draft, tasks::MAX_LEN),
+            (None, Some(draft), _) => (draft, CITY_MAX),
+            (None, None, Some(draft)) => (draft, agenda::MAX_LEN),
+            (None, None, None) => return,
         };
         let room = max.saturating_sub(draft.chars().count());
         draft.extend(text.chars().filter(|c| !c.is_control()).take(room));
@@ -1192,10 +1447,41 @@ impl App {
             self.refresh();
             return;
         }
+        let settled = self.view.content().is_some_and(|i| self.alpha[i] == 1.0);
+        // Pemutar di panel: gelombang di kepala cukup digambar ulang sendiri. Gambar penuh saat
+        // detik lagu berganti; baris lirik berikutnya bergulir naik, lompatan (misal sesudah
+        // bar diseret) langsung digambar.
+        if self.view.is_panel() && self.page == Page::Home && self.playing() {
+            let index = self.lyric_index();
+            if self.lyric_column() && index != self.lyric_drawn {
+                if let (Some(new), Some(old)) = (index, self.lyric_drawn)
+                    && new == old + 1
+                {
+                    self.start_motion();
+                    self.lyric_scroll = Some(self.now());
+                } else {
+                    self.redraw();
+                }
+                return;
+            }
+            let second = self.media.as_ref().map(|m| m.position_now() as u64);
+            if settled && second == self.second_drawn && self.page_anim.is_none() {
+                let accent = self.media.as_ref().and_then(|m| m.art.as_ref()).and_then(|art| art.accent);
+                let result = self
+                    .renderer
+                    .draw_header_wave(self.width.value, self.now(), accent)
+                    .and_then(|dirty| self.renderer.present(self.hwnd, self.window_pos(), Some(&dirty)));
+                if let Err(e) = result {
+                    debug_log!("gagal menggambar gelombang: {e}");
+                }
+            } else {
+                self.redraw();
+            }
+            return;
+        }
         // Pil yang diam cukup diperbarui gelombangnya saja; gambar penuh kalau baris lirik
         // berganti, dan sesekali supaya jam dan cincin pomodoro ikut terbarui.
         let pill = matches!(self.view, View::Pill | View::LyricPill);
-        let settled = self.view.content().is_some_and(|i| self.alpha[i] == 1.0);
         let lyric_moved = self.view == View::LyricPill && self.lyric_line().map(|(i, _)| i) != Some(self.lyric_shown);
         if pill && self.playing() && settled && !lyric_moved && self.now() - self.last_full < 5.0 {
             let accent = self.media.as_ref().and_then(|m| m.art.as_ref()).and_then(|art| art.accent);
@@ -1226,10 +1512,60 @@ impl App {
             self.focus.new_day();
         }
         self.check_water();
+        self.check_agenda();
         if !self.animating() {
             self.redraw();
         }
         self.schedule_clock();
+    }
+
+    /// Agenda yang jatuh tepat pada menit ini muncul sebagai kabar dengan bunyi pengingat.
+    fn check_agenda(&mut self) {
+        let t = clock::now();
+        let due = self.agenda.due(today(), t.wHour as u32, t.wMinute as u32).first().map(|e| (e.text.clone(), e.time_text()));
+        if let Some((text, time)) = due {
+            self.alert(Hud::Agenda { text, time }, AGENDA_HUD_MS, Sound::Reminder);
+            self.refresh();
+        }
+    }
+
+    /// Hari yang sedang dipilih di kalender.
+    fn selected_day(&self) -> Date {
+        today().add_days(self.cal_offset as i64)
+    }
+
+    /// Kolom kalender untuk Beranda lebar.
+    fn calendar_view(&self) -> Option<CalendarView> {
+        if !self.settings.calendar || self.locked {
+            return None;
+        }
+        let (today, selected) = (today(), self.selected_day());
+        let days = (-2..=2)
+            .map(|k| {
+                let day = selected.add_days(k as i64);
+                DayView {
+                    offset: self.cal_offset + k,
+                    name: day.weekday(),
+                    number: day.day,
+                    today: day == today,
+                    selected: k == 0,
+                    has_events: self.agenda.has(day),
+                }
+            })
+            .collect();
+        let events = self
+            .agenda
+            .on(selected)
+            .into_iter()
+            .map(|e| AgendaItem { id: e.id, time: e.time_text(), text: e.text.clone(), done: e.done })
+            .collect();
+        Some(CalendarView {
+            month: selected.month_name().to_string(),
+            year: selected.year.to_string(),
+            days,
+            events,
+            scroll: self.agenda.scroll,
+        })
     }
 
     /// Ingatkan minum kalau sudah waktunya, hanya di jam aktif dan selama target belum tercapai.
@@ -1317,6 +1653,7 @@ impl App {
                 Event::Message(message) => self.on_message(message),
                 Event::Network(state) => self.on_network(state),
                 Event::Files { kind, paths } => self.on_files(kind, paths),
+                Event::Downloading(state) => self.downloading = state.filter(|_| self.settings.downloads),
                 Event::BluetoothBattery { id, battery } => {
                     // Baterai yang telat terbaca hanya dipakai kalau kabarnya masih tampil.
                     if self.hud_visible
@@ -1465,6 +1802,7 @@ impl App {
                 let added = self.shelf.add(paths);
                 let Some((id, path)) = added.last().cloned() else { return };
                 self.shelf.save();
+                self.pop_tiles(&added);
                 let more = added.len() - 1;
                 self.services.thumbnails(added);
                 self.show_hud(Hud::Screenshot { id, name: name(&path), more }, SCREENSHOT_HUD_MS);
@@ -1603,6 +1941,7 @@ impl App {
                 self.locked = false;
                 self.refresh_mode(true);
                 self.apply_visibility();
+                self.wake_up();
                 self.refresh();
             }
             _ => {}
@@ -1705,6 +2044,46 @@ impl App {
         Some((index, index.map_or("♪", |i| lyrics.text(i)).to_string()))
     }
 
+    /// Kolom lirik di samping pemutar diminta tampil (tombol lirik menyala).
+    fn lyric_column(&self) -> bool {
+        self.settings.lyrics && self.settings.lyric_panel && self.media.is_some()
+    }
+
+    fn lyric_goal(&self) -> f32 {
+        if self.lyric_column() { 1.0 } else { 0.0 }
+    }
+
+    /// Baris lirik lagu saat ini untuk kolom lirik; -1 sebelum baris pertama.
+    fn lyric_index(&self) -> Option<isize> {
+        let m = self.media.as_ref()?;
+        let key = lyrics::key(&m.title, &m.artist);
+        let lyrics = self.lyrics.as_ref().filter(|l| l.key == key && !l.lines.is_empty())?;
+        Some(lyrics.current(m.position_now()).map_or(-1, |i| i as isize))
+    }
+
+    /// Isi kolom lirik: lima baris di sekitar baris sekarang, atau keterangan kalau liriknya
+    /// sedang dicari atau tidak ada. Tetap ada selama kolomnya bergeser keluar.
+    fn lyrics_view(&self) -> Option<LyricsView> {
+        if !self.settings.lyrics || (!self.lyric_column() && self.lyric_mix <= 0.0) {
+            return None;
+        }
+        let m = self.media.as_ref()?;
+        let key = lyrics::key(&m.title, &m.artist);
+        let status = |text| Some(LyricsView { lines: Default::default(), scroll: 1.0, status: Some(text) });
+        let Some(lyrics) = self.lyrics.as_ref().filter(|l| l.key == key && !l.lines.is_empty()) else {
+            return if self.lyric_pending.as_ref() == Some(&key) { status("Mencari lirik…") } else { status("Lirik tidak tersedia") };
+        };
+        let current = lyrics.current(m.position_now()).map_or(-1, |i| i as isize);
+        let lines = std::array::from_fn(|k| match current + k as isize - 2 {
+            // Sebelum baris pertama: not balok di tempat baris yang sedang dinyanyikan.
+            -1 => "♪".to_string(),
+            i if i >= 0 && (i as usize) < lyrics.lines.len() => lyrics.text(i as usize).to_string(),
+            _ => String::new(),
+        });
+        let scroll = self.lyric_scroll.map_or(1.0, |start| ((self.now() - start) / LYRIC_SCROLL_SECS).min(1.0) as f32);
+        Some(LyricsView { lines, scroll, status: None })
+    }
+
     fn playing(&self) -> bool {
         self.media.as_ref().is_some_and(|m| m.playing)
     }
@@ -1722,6 +2101,7 @@ impl App {
         match wparam.0 as u32 {
             PBT_APMRESUMEAUTOMATIC => {
                 self.on_clock();
+                self.wake_up();
                 None
             }
             PBT_POWERSETTINGCHANGE => {
@@ -1770,9 +2150,32 @@ impl App {
         if !self.shown || self.expanded || (self.quiet() && !urgent(&hud)) {
             return;
         }
+        // Volume/kecerahan yang berubah lagi selagi kabarnya tampil: bilahnya bergeser halus
+        // dan angkanya bergulir, bukan langsung melompat.
+        if let Some(level) = hud_level(&hud) {
+            let same = self.hud_visible && self.hud.as_ref().is_some_and(|old| std::mem::discriminant(old) == std::mem::discriminant(&hud));
+            if same {
+                self.start_motion();
+                let before = self.hud.as_ref().and_then(hud_level).unwrap_or(level);
+                if let (Some(old), Some(new)) = (self.hud.as_ref().and_then(hud_value), hud_value(&hud))
+                    && old != new
+                {
+                    self.hud_roll = Some((old, self.now(), level >= before));
+                }
+                self.hud_fill_target = level;
+            } else {
+                (self.hud_fill, self.hud_fill_target, self.hud_roll) = (level, level, None);
+            }
+        }
         self.hud = Some(hud);
         self.hud_visible = true;
         self.set_timer(TIMER_HUD, ms);
+    }
+
+    /// Kabar terakhir memakai bentuk ringkas (juga selama sedang memudar keluar).
+    fn compact_hud(&self) -> bool {
+        self.settings.compact_hud
+            && matches!(self.hud, Some(Hud::Volume { .. } | Hud::Brightness { .. } | Hud::LockKey { .. } | Hud::Power { .. }))
     }
 
     fn set_expanded(&mut self, expanded: bool) {
@@ -1794,6 +2197,9 @@ impl App {
         } else {
             self.hovered = None;
             self.page_anim = None;
+            // Kalender kembali ke hari ini saat panel dibuka lagi.
+            self.cal_offset = 0;
+            self.agenda.scroll = 0;
         }
         self.refresh();
     }
@@ -1801,11 +2207,15 @@ impl App {
     fn wanted_view(&self) -> View {
         // Titik privasi lebih penting daripada ruang tab: selama kamera/mikrofon dipakai,
         // notch tidak menciut jadi garis tipis.
-        let slim = self.mode == Mode::Maximized && !self.privacy.active() && !self.locked;
+        // Garis tipis yang disentuh kursor kembali jadi pil dulu.
+        let slim = self.mode == Mode::Maximized && !self.privacy.active() && !self.locked && !self.peek;
         if self.expanded {
-            View::Panel
+            // Beranda lebar dengan kalender (tidak di lock screen: agenda itu pribadi), atau
+            // dengan kolom lirik di samping pemutar.
+            let calendar = self.settings.calendar && !self.locked;
+            if self.page == Page::Home && (calendar || self.lyric_column()) { View::PanelWide } else { View::Panel }
         } else if self.hud_visible {
-            View::Hud
+            if self.compact_hud() { View::Strip } else { View::Hud }
         } else if slim {
             View::Slim
         } else if self.playing() && self.lyric_line().is_some() {
@@ -1821,9 +2231,14 @@ impl App {
         let target = self.view_size(view);
         if view != self.view || target != self.target {
             self.start_motion();
+            let opening = target.0 * target.1 > self.width.value * self.height.value;
+            let bounce = if opening { OPEN_BOUNCE } else { CLOSE_BOUNCE };
+            self.width.set_damping_ratio(bounce);
+            self.height.set_damping_ratio(bounce);
             if view != self.view {
                 debug_log!("bentuk: {:?} -> {view:?}", self.view);
                 self.from = (self.width.value, self.height.value);
+                self.panel_resize = self.view.is_panel() && view.is_panel();
             } else if self.transition() >= 1.0 {
                 // Hanya ukurannya yang berubah (baris lirik baru): isinya tidak perlu memudar.
                 self.from = target;
@@ -1832,6 +2247,10 @@ impl App {
             self.target = target;
             self.width.target = target.0;
             self.height.target = target.1;
+        }
+        // Kolom lirik baru bergeser selama panel terbuka; saat tertutup langsung di tempatnya.
+        if !self.expanded {
+            self.lyric_mix = self.lyric_goal();
         }
         self.update_ambient();
         self.update_system_watch();
@@ -1848,14 +2267,41 @@ impl App {
         self.width.snap(w);
         self.height.snap(h);
         self.from = (w, h);
+        self.panel_resize = false;
+        self.lyric_mix = self.lyric_goal();
         self.alpha = self.alpha_goals();
     }
 
     /// Ukuran bentuk; pil lirik melebar, atau jadi dua baris, mengikuti baris liriknya.
     fn view_size(&self, view: View) -> (f32, f32) {
-        match (view, self.lyric_line()) {
+        let (w, h) = match (view, self.lyric_line()) {
             (View::LyricPill, Some((_, line))) => self.renderer.lyric_size(&line),
             _ => view.size(),
+        };
+        let w = if view == View::Pill && self.download_text().is_some() { w + DOWNLOAD_GROW } else { w };
+        match view {
+            View::Pill | View::LyricPill if self.peek => (w + PEEK_GROW.0, h + PEEK_GROW.1),
+            _ => (w, h),
+        }
+    }
+
+    /// Ukuran unduhan yang sedang berjalan untuk pil, selama tidak ada musik atau timer.
+    fn download_text(&self) -> Option<String> {
+        let (count, bytes) = self.downloading.filter(|_| !self.playing() && !self.timer.running())?;
+        let size = crate::sysinfo::size(bytes);
+        Some(if count > 1 { format!("{count} · {size}") } else { size })
+    }
+
+    /// Bayangan penuh saat panel terbuka, tipis saat pil disentuh kursor.
+    fn shadow_goal(&self) -> f32 {
+        if !self.shown {
+            0.0
+        } else if self.expanded {
+            1.0
+        } else if self.peek {
+            0.6
+        } else {
+            0.0
         }
     }
 
@@ -1865,16 +2311,17 @@ impl App {
         let focusing = self.focus.running();
         let timing = self.timer.running();
         let last_minute = self.timer.remaining(Instant::now()) < Duration::from_secs(60);
-        let lyric = self.lyric_line().is_some();
         let interval = match self.view {
             _ if !self.shown => None,
+            v if v.is_panel() && self.page == Page::Shelf && self.shelf.drop_hover => Some(DASH_MS),
             View::Pill | View::LyricPill if playing => Some(WAVE_MS),
             // Di menit terakhir pil menghitung detik.
             View::Pill if timing => Some(if last_minute { PROGRESS_MS } else { PILL_FOCUS_MS }),
             View::Pill if focusing => Some(PILL_FOCUS_MS),
-            View::Panel if self.page == Page::Timer && timing => Some(FOCUS_TICK_MS),
-            View::Panel if self.page == Page::Home && playing => Some(if lyric { LYRIC_MS } else { PROGRESS_MS }),
-            View::Panel if self.page == Page::Focus && focusing => Some(FOCUS_TICK_MS),
+            v if v.is_panel() && self.page == Page::Timer && timing => Some(FOCUS_TICK_MS),
+            // Gelombang di kepala pemutar; detik lagu dan baris lirik diperiksa sekalian.
+            v if v.is_panel() && self.page == Page::Home && playing => Some(WAVE_MS),
+            v if v.is_panel() && self.page == Page::Focus && focusing => Some(FOCUS_TICK_MS),
             _ => None,
         };
         if interval != self.ambient {
@@ -1892,7 +2339,7 @@ impl App {
         self.shown
             && match self.view {
                 View::Pill => !self.playing() && !self.focus.running() && !self.timer.running(),
-                View::Panel => self.page == Page::Home && self.media.is_none() && self.page_anim.is_none(),
+                View::Panel | View::PanelWide => self.page == Page::Home && self.media.is_none() && self.page_anim.is_none(),
                 _ => false,
             }
     }
@@ -1932,7 +2379,14 @@ impl App {
         } else {
             let (pos, size, scale) = (self.window_pos(), self.renderer.size(), self.renderer.scale());
             // Letak mata dalam DIP dari tengah atas kanvas: kiri pil, atau kanan halaman jam.
-            let (ex, ey) = if self.view == View::Panel { (148.0, 76.0) } else { (-70.0, 15.0) };
+            // Mata di halaman jam: di kanan panel biasa, atau di kanan kolom kiri Beranda lebar.
+            let (ex, ey) = if self.view == View::Panel {
+                (148.0, 76.0)
+            } else if self.view == View::PanelWide {
+                (18.0, 76.0)
+            } else {
+                (18.0 - self.width.value / 2.0, self.height.value / 2.0)
+            };
             let eye_x = pos.x as f32 + size.cx as f32 / 2.0 + ex * scale;
             let eye_y = pos.y as f32 + ey * scale;
             // Lirikan penuh saat kursor sekitar sepertiga layar jauhnya.
@@ -2059,7 +2513,7 @@ impl App {
     fn alpha_goals(&self) -> [f32; CONTENTS] {
         let mut goals = [0.0; CONTENTS];
         if let Some(i) = self.view.content()
-            && self.transition() > 0.6
+            && (self.transition() > 0.6 || self.panel_resize)
         {
             goals[i] = 1.0;
         }
@@ -2073,7 +2527,15 @@ impl App {
                 || self.alpha != self.alpha_goals()
                 || self.blink_since.is_some()
                 || self.page_anim.is_some()
-                || self.gaze != self.gaze_target)
+                || self.gaze != self.gaze_target
+                || self.shadow != self.shadow_goal()
+                || !self.tile_fx.is_empty()
+                || self.drop_glow.is_some()
+                || self.hud_fill != self.hud_fill_target
+                || self.hud_roll.is_some()
+                || self.wake.is_some()
+                || self.lyric_mix != self.lyric_goal()
+                || self.lyric_scroll.is_some())
     }
 
     /// Panggil sebelum mengubah target animasi, supaya frame pertama tidak melompat.
@@ -2114,6 +2576,52 @@ impl App {
         if self.page_anim.is_some_and(|(_, start, _)| now - start >= PAGE_ANIM_SECS) {
             self.page_anim = None;
         }
+        // Ubin yang selesai menghilang baru sekarang dibuang dari shelf.
+        let finished: Vec<(u64, bool)> = self
+            .tile_fx
+            .iter()
+            .filter(|(_, (start, removing))| now - start >= if *removing { TILE_OUT_SECS } else { TILE_IN_SECS })
+            .map(|(id, (_, removing))| (*id, *removing))
+            .collect();
+        let mut removed = false;
+        for (id, removing) in finished {
+            self.tile_fx.remove(&id);
+            if removing {
+                self.shelf.remove(id);
+                removed = true;
+            }
+        }
+        if removed {
+            self.shelf_changed();
+        }
+        if self.drop_glow.is_some_and(|start| now - start >= GLOW_SECS) {
+            self.drop_glow = None;
+        }
+        if self.hud_roll.as_ref().is_some_and(|(_, start, _)| now - start >= ROLL_SECS) {
+            self.hud_roll = None;
+        }
+        // Sesudah bangun, maskot langsung berkedip sekali.
+        if self.wake.is_some_and(|start| now - start >= WAKE_CLOSED_SECS + WAKE_OPEN_SECS) {
+            self.wake = None;
+            self.set_timer(TIMER_BLINK, 350);
+        }
+        if self.lyric_scroll.is_some_and(|start| now - start >= LYRIC_SCROLL_SECS) {
+            self.lyric_scroll = None;
+        }
+        let goal = self.lyric_goal();
+        self.lyric_mix += (goal - self.lyric_mix) * (1.0 - (-dt / 0.09).exp());
+        if (goal - self.lyric_mix).abs() < 0.004 {
+            self.lyric_mix = goal;
+        }
+        self.hud_fill += (self.hud_fill_target - self.hud_fill) * (1.0 - (-dt / 0.07).exp());
+        if (self.hud_fill_target - self.hud_fill).abs() < 0.002 {
+            self.hud_fill = self.hud_fill_target;
+        }
+        let shadow = self.shadow_goal();
+        self.shadow += (shadow - self.shadow) * (1.0 - (-dt / 0.1).exp());
+        if (shadow - self.shadow).abs() < 0.01 {
+            self.shadow = shadow;
+        }
         if self.gaze != self.gaze_target {
             let k = 1.0 - (-dt / 0.09).exp();
             let (tx, ty) = self.gaze_target;
@@ -2125,7 +2633,7 @@ impl App {
         if eyes_only && self.shown {
             let result = self
                 .renderer
-                .draw_eyes(self.eyes())
+                .draw_eyes(self.width.value, self.height.value, self.eyes())
                 .and_then(|dirty| self.renderer.present(self.hwnd, self.window_pos(), Some(&dirty)));
             if let Err(e) = result {
                 debug_log!("gagal menggambar mata: {e}");
@@ -2141,32 +2649,62 @@ impl App {
         }
         let t = clock::now();
         let (time, date) = (clock::time(&t), clock::date(&t));
-        let media = self.media.as_ref().map(media_view);
+        let d = today();
+        let day = format!("{} {} {} {}", d.weekday(), d.day, d.month_name(), d.year);
+        let battery = self.battery.or_else(power::battery_percent).map(|b| (b, self.plugged == Some(true)));
+        let media = self.media.as_ref().map(|m| media_view(m, self.seek_preview));
+        let lyrics = self.lyrics_view();
         let focus = self.focus_view();
         let water = self.water_view();
         let timer = self.timer_view();
         let controls = self.controls_view();
         let weather = self.weather_text();
+        let calendar = self.calendar_view();
+        let download = self.download_text();
         let lyric = self.lyric_line();
-        let uptime = clock::uptime();
         let now = self.now();
+        let roll = self.hud_roll.as_ref().map(|(from, start, up)| Roll {
+            from: from.clone(),
+            t: ((now - start) / ROLL_SECS).min(1.0) as f32,
+            up: *up,
+        });
+        let shelf_fx = ShelfFx {
+            targeted: self.shelf.drop_hover && self.drop_over == Some(DropZone::Shelf),
+            share_targeted: self.shelf.drop_hover && self.drop_over == Some(DropZone::Share),
+            dash: (now * 5.0 % 5.0) as f32,
+            glow: self.drop_glow.map(|start| ((now - start) / GLOW_SECS).min(1.0) as f32),
+            tiles: self.tile_fx.iter().map(|(id, (start, removing))| (*id, tile_look(now - start, *removing))).collect(),
+        };
+        let uptime = clock::uptime();
         let scene = Scene {
             width: self.width.value,
             height: self.height.value,
             alpha: self.alpha,
             eyes: self.eyes(),
+            shadow: self.shadow,
             time: &time,
             date: &date,
+            day: &day,
             greeting: clock::greeting(&t),
+            battery,
             media: media.as_ref(),
             lyric: lyric.as_ref().map(|(_, text)| text.as_str()),
+            lyrics: lyrics.as_ref(),
+            lyric_mix: self.lyric_mix,
+            lyrics_button: self.settings.lyrics.then_some(self.settings.lyric_panel),
             hud: self.hud.as_ref(),
+            // Mengikuti jenis kabarnya, bukan bentuk notch saat ini: selama kabar memudar, notch
+            // sudah kembali ke bentuk pil, tapi isinya harus tetap bentuk ringkas.
+            hud_compact: self.compact_hud(),
+            hud_roll: roll.as_ref(),
+            hud_fill: self.hud_fill,
             page: self.page,
             pages: self.settings.pages,
             page_from: self
                 .page_anim
                 .map(|(from, start, dir)| (from, ((now - start) / PAGE_ANIM_SECS).clamp(0.0, 1.0) as f32, dir)),
             shelf: &self.shelf,
+            shelf_fx: &shelf_fx,
             tasks: &self.tasks,
             focus: &focus,
             water: &water,
@@ -2180,6 +2718,9 @@ impl App {
             controls: &controls,
             weather: weather.as_deref(),
             city_draft: self.city_draft.as_deref(),
+            calendar: calendar.as_ref(),
+            agenda_draft: self.agenda.draft.as_deref(),
+            download: download.as_deref(),
         };
         let result = self.renderer.draw(&scene).and_then(|_| self.renderer.present(self.hwnd, self.window_pos(), None));
         if let Err(e) = result {
@@ -2187,6 +2728,8 @@ impl App {
         }
         self.last_full = now;
         self.lyric_shown = lyric.and_then(|(index, _)| index);
+        self.lyric_drawn = self.lyric_index();
+        self.second_drawn = self.media.as_ref().map(|m| m.position_now() as u64);
     }
 
     fn timer_view(&self) -> TimerView {
@@ -2256,6 +2799,11 @@ impl App {
     }
 
     fn eyes_open(&self) -> f32 {
+        // Bangun: terpejam sebentar, lalu terbuka perlahan (mulus di awal dan akhir).
+        if let Some(start) = self.wake {
+            let t = ((self.now() - start - WAKE_CLOSED_SECS) / WAKE_OPEN_SECS).clamp(0.0, 1.0) as f32;
+            return t * t * (3.0 - 2.0 * t);
+        }
         match self.blink_since {
             Some(start) => {
                 let t = ((self.now() - start) / BLINK_SECS).clamp(0.0, 1.0) as f32;
@@ -2346,6 +2894,7 @@ impl App {
             }
             Command::ToggleDownloads => {
                 self.settings.downloads = !self.settings.downloads;
+                self.downloading = None;
                 self.settings.save();
                 self.update_watchers();
             }
@@ -2363,10 +2912,19 @@ impl App {
                     self.page = Page::Controls;
                     self.page_anim = None;
                     self.set_expanded(true);
-                    self.begin_edit(true);
+                    self.begin_edit(Field::City);
                 }
                 self.fetch_weather();
                 self.refresh();
+            }
+            Command::ToggleCalendar => {
+                self.settings.calendar = !self.settings.calendar;
+                self.settings.save();
+                self.refresh();
+            }
+            Command::ToggleCompactHud => {
+                self.settings.compact_hud = !self.settings.compact_hud;
+                self.settings.save();
             }
             Command::ToggleBrowserMessages => {
                 self.settings.browser_messages = !self.settings.browser_messages;
@@ -2426,18 +2984,23 @@ impl Drop for App {
 }
 
 /// Ubah data media mentah jadi teks yang siap digambar, dengan posisi yang terus berjalan.
-fn media_view(s: &Snapshot) -> MediaView {
-    let position = s.position_now();
+/// Selama bar diseret, posisinya mengikuti `seek` (0..1).
+fn media_view(s: &Snapshot, seek: Option<f32>) -> MediaView {
+    let position = match seek {
+        Some(fraction) if s.duration > 0.0 => fraction as f64 * s.duration,
+        _ => s.position_now(),
+    };
     MediaView {
         title: s.title.clone(),
         artist: s.artist.clone(),
-        source: s.source.clone(),
         playing: s.playing,
         progress: (s.duration > 1.0).then(|| (position / s.duration) as f32),
         elapsed: clock::duration(position),
         remaining: format!("-{}", clock::duration(s.duration - position)),
         can_previous: s.can_previous,
         can_next: s.can_next,
+        can_seek: s.can_seek && s.duration > 1.0,
+        seeking: seek.is_some(),
         accent: s.art.as_ref().and_then(|art| art.accent),
     }
 }
@@ -2481,6 +3044,66 @@ fn primary_monitor() -> (HMONITOR, RECT) {
         let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
         let _ = GetMonitorInfoW(monitor, &mut info);
         (monitor, info.rcMonitor)
+    }
+}
+
+/// Skala dan transparansi ubin shelf yang sedang muncul atau menghilang, `elapsed` detik sejak mulai.
+fn tile_look(elapsed: f64, removing: bool) -> (f32, f32) {
+    if removing {
+        let t = (elapsed / TILE_OUT_SECS).min(1.0) as f32;
+        (1.0 - 0.35 * t, 1.0 - t)
+    } else {
+        // Membesar melewati ukuran asli sedikit lalu kembali (ease-out-back).
+        let t = (elapsed / TILE_IN_SECS).min(1.0) as f32;
+        let (c1, u) = (1.70158, t - 1.0);
+        let back = 1.0 + (c1 + 1.0) * u * u * u + c1 * u * u;
+        (0.5 + 0.5 * back, (t * 2.0).min(1.0))
+    }
+}
+
+/// Bawa jendela notch ke depan. Tepat sesudah file dilepas, aplikasi asal file (misal Explorer)
+/// masih memegang input sehingga Windows menolak; antrean input aplikasi itu dipinjam sebentar,
+/// cara yang memang disediakan Windows untuk berpindah jendela depan antar-aplikasi.
+fn bring_to_front(hwnd: HWND) {
+    unsafe {
+        if SetForegroundWindow(hwnd).as_bool() {
+            return;
+        }
+        let front = GetWindowThreadProcessId(GetForegroundWindow(), None);
+        let me = GetCurrentThreadId();
+        if front != 0 && front != me && AttachThreadInput(me, front, true).as_bool() {
+            let _ = SetForegroundWindow(hwnd);
+            let _ = AttachThreadInput(me, front, false);
+        }
+    }
+}
+
+/// Zona tempat file yang diseret akan dilepas.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DropZone {
+    Shelf,
+    Share,
+}
+
+/// Kotak ketik yang sedang dipakai.
+#[derive(Clone, Copy)]
+enum Field {
+    Task,
+    City,
+    Agenda,
+}
+
+/// Tanggal hari ini.
+fn today() -> Date {
+    let t = clock::now();
+    Date::new(t.wYear as i32, t.wMonth as u32, t.wDay as u32)
+}
+
+/// Tingkat bilah kabar volume/kecerahan, 0..1.
+fn hud_level(hud: &Hud) -> Option<f32> {
+    match hud {
+        Hud::Volume { level, .. } | Hud::Brightness { level } => Some(*level),
+        _ => None,
     }
 }
 

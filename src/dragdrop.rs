@@ -1,7 +1,7 @@
 //! Seret file ke notch (masuk ke shelf), seret dari shelf ke aplikasi lain, serta membuka
 //! atau menampilkan file di Explorer.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
@@ -26,6 +26,8 @@ pub const WM_DRAG: u32 = WM_APP + 5;
 pub const DRAG_LEAVE: usize = 0;
 pub const DRAG_ENTER: usize = 1;
 pub const DRAG_DROP: usize = 2;
+/// File sedang diseret di atas notch; `lparam` = posisi kursor di layar (seperti pesan mouse).
+pub const DRAG_OVER: usize = 3;
 
 const HDROP_FORMAT: FORMATETC = FORMATETC {
     cfFormat: CF_HDROP.0,
@@ -53,7 +55,7 @@ impl DropRegistration {
     pub fn register(hwnd: HWND) -> Result<Self> {
         unsafe {
             OleInitialize(None)?;
-            let target: IDropTarget = Target { hwnd }.into();
+            let target: IDropTarget = Target { hwnd, last: Cell::new((i32::MIN, i32::MIN)) }.into();
             if let Err(e) = RegisterDragDrop(hwnd, &target) {
                 OleUninitialize();
                 return Err(e);
@@ -75,11 +77,21 @@ impl Drop for DropRegistration {
 #[implement(IDropTarget)]
 struct Target {
     hwnd: HWND,
+    /// Posisi terakhir yang dikabarkan; Windows memanggil `DragOver` terus walau kursor diam.
+    last: Cell<(i32, i32)>,
 }
 
 impl Target {
     fn post(&self, kind: usize) {
         let _ = unsafe { PostMessageW(Some(self.hwnd), WM_DRAG, WPARAM(kind), LPARAM(0)) };
+    }
+
+    fn post_position(&self, pt: &POINTL) {
+        if self.last.replace((pt.x, pt.y)) == (pt.x, pt.y) {
+            return;
+        }
+        let packed = (((pt.y as u32) & 0xFFFF) << 16) | ((pt.x as u32) & 0xFFFF);
+        let _ = unsafe { PostMessageW(Some(self.hwnd), WM_DRAG, WPARAM(DRAG_OVER), LPARAM(packed as isize)) };
     }
 }
 
@@ -88,20 +100,23 @@ impl IDropTarget_Impl for Target_Impl {
         &self,
         data: Ref<IDataObject>,
         _keys: MODIFIERKEYS_FLAGS,
-        _pt: &POINTL,
+        pt: &POINTL,
         effect: *mut DROPEFFECT,
     ) -> Result<()> {
         let has_files = data.as_ref().is_some_and(|d| unsafe { d.QueryGetData(&HDROP_FORMAT) } == S_OK);
         set_effect(effect, if has_files { DROPEFFECT_COPY } else { DROPEFFECT_NONE });
         if has_files {
             self.post(DRAG_ENTER);
+            self.last.set((i32::MIN, i32::MIN));
+            self.post_position(pt);
         }
         Ok(())
     }
 
-    fn DragOver(&self, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
+    fn DragOver(&self, _keys: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
         // Shelf hanya menyimpan lokasi file, jadi bagi aplikasi sumber ini sama dengan menyalin.
         set_effect(effect, DROPEFFECT_COPY);
+        self.post_position(pt);
         Ok(())
     }
 
