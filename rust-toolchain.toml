@@ -1,0 +1,6 @@
+# Versi Rust yang dipakai membangun notch, di komputer sendiri maupun di GitHub Actions, supaya
+# hasil build rilis selalu dari compiler yang sama.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["clippy"]

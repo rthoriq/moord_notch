@@ -115,6 +115,7 @@ struct State<'a> {
     lyrics: Option<&'a LyricsView>,
     lyric_mix: f32,
     lyrics_button: Option<bool>,
+    welcome: bool,
 }
 
 impl<'a> State<'a> {
@@ -145,6 +146,7 @@ impl<'a> State<'a> {
             lyrics: None,
             lyric_mix: 0.0,
             lyrics_button: None,
+            welcome: false,
         }
     }
 }
@@ -206,7 +208,7 @@ fn preview_states() {
     };
     let water_hud = Hud::Water { ml: 1250, goal: 2000 };
     let camera = Hud::Privacy { camera: true, app: "Zoom".into() };
-    let lyric = "Tiap detik masih merindukanmu, oh-oh";
+    let lyric = "Langit sore memudar di ujung jalan";
     let long_lyric = "Kau bilang aku segalanya, tapi kenyataannya kau pergi tanpa sepatah kata pun untukku";
     let brightness = Hud::Brightness { level: 0.7 };
     let caps = Hud::LockKey { caps: true, on: true };
@@ -353,6 +355,8 @@ fn preview_states() {
         State { download: Some("12,4 MB"), size: Some((236.0, 30.0)), ..State::new("pill_download", View::Pill, Page::Home) },
         State { fx: Some(&sharing), ..State::new("drop_share", View::Panel, Page::Shelf) },
         State { media: true, lyrics_button: Some(false), ..State::new("player_seeking", View::Panel, Page::Home) },
+        State { welcome: true, hovered: Some(Hit::WelcomeDone), ..State::new("welcome", View::Panel, Page::Home) },
+        State { welcome: true, theme: Theme::Light, ..State::new("welcome_light", View::Panel, Page::Home) },
     ];
     for state in states {
         let mut renderer = Renderer::new(state.dpi, state.theme).unwrap();
@@ -417,6 +421,7 @@ fn preview_states() {
             calendar: state.calendar,
             agenda_draft: state.agenda_draft,
             download: state.download,
+            welcome: state.welcome,
         };
         renderer.draw(&scene).unwrap();
         let _ = unsafe { GdiFlush() };
@@ -472,6 +477,7 @@ fn scene_for<'a>(data: &'a Sample, view: View, page: Page, media: bool) -> Scene
         calendar: None,
         agenda_draft: None,
         download: None,
+        welcome: false,
     }
 }
 
@@ -579,6 +585,55 @@ fn hits_follow_drawing() {
 }
 
 const MARGIN_FOR_TEST: f32 = 32.0;
+
+/// Tulis ulang `packaging/notch.ico` dari maskot ikon tray (ikon notch.exe di menu Start,
+/// Explorer, dan Pengaturan > Aplikasi). Jalankan dengan
+/// `cargo test write_app_icon -- --ignored` setelah maskotnya diubah.
+#[test]
+#[ignore]
+fn write_app_icon() {
+    const SIZES: [i32; 8] = [16, 20, 24, 32, 40, 48, 64, 128];
+    let images: Vec<Vec<u8>> = SIZES
+        .iter()
+        .map(|&size| {
+            let mut surface = icon_surface(size).unwrap();
+            let pixels = surface.pixels().to_vec();
+            // Gambar ikon: BITMAPINFOHEADER, piksel BGRA dari baris bawah ke atas, lalu topeng AND
+            // (semua nol; transparansinya dari alfa).
+            let mut image = Vec::new();
+            for value in [40u32, size as u32, size as u32 * 2] {
+                image.extend(value.to_le_bytes());
+            }
+            image.extend(1u16.to_le_bytes());
+            image.extend(32u16.to_le_bytes());
+            image.extend([0u8; 24]);
+            for row in (0..size as usize).rev() {
+                for px in &pixels[row * size as usize..(row + 1) * size as usize] {
+                    image.extend(px.to_le_bytes());
+                }
+            }
+            let mask_row = (size as usize).div_ceil(32) * 4;
+            image.extend(vec![0u8; mask_row * size as usize]);
+            image
+        })
+        .collect();
+    let mut ico = Vec::new();
+    ico.extend([0u16, 1, SIZES.len() as u16].iter().flat_map(|v| v.to_le_bytes()));
+    let mut offset = 6 + 16 * SIZES.len() as u32;
+    for (&size, image) in SIZES.iter().zip(&images) {
+        ico.extend([size as u8, size as u8, 0, 0]);
+        ico.extend(1u16.to_le_bytes());
+        ico.extend(32u16.to_le_bytes());
+        ico.extend((image.len() as u32).to_le_bytes());
+        ico.extend(offset.to_le_bytes());
+        offset += image.len() as u32;
+    }
+    for image in &images {
+        ico.extend(image);
+    }
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging").join("notch.ico");
+    std::fs::write(&path, ico).unwrap();
+}
 
 /// Tombol lirik, bar lagu, dan tombol putar bisa diklik di tempat yang terlihat; bar lagu
 /// mengubah posisi klik jadi posisi lagu.

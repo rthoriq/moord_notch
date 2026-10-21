@@ -3,7 +3,8 @@
 
 use std::path::PathBuf;
 
-fn dir() -> Option<PathBuf> {
+/// Folder data notch: `%APPDATA%\NotchWindows`.
+pub fn dir() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("NotchWindows"))
 }
 
@@ -29,6 +30,6 @@ pub fn save(name: &str, lines: impl IntoIterator<Item = String>) {
         .and_then(|_| std::fs::write(&temp, text))
         .and_then(|_| std::fs::rename(&temp, dir.join(name)));
     if let Err(e) = result {
-        debug_log!("gagal menyimpan {name}: {e}");
+        error_log!("gagal menyimpan {name}: {e}");
     }
 }

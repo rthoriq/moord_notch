@@ -1,0 +1,73 @@
+# Rilis otomatis saat tag versi didorong, misal `git tag v1.0.0 && git push origin v1.0.0`.
+# notch.exe dibangun di sini dari kode di repo ini (bukan diunggah dari komputer pribadi), lalu
+# diberi bukti asal (attestation) yang bisa dicek siapa saja dengan `gh attestation verify`.
+name: Rilis
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+jobs:
+  rilis:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Pasang Rust (versi dari rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Cocokkan tag dengan versi di Cargo.toml
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "Tag $env:GITHUB_REF_NAME tidak sama dengan versi Cargo.toml ($version)"
+          }
+      - name: Tes
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --release --locked
+      - name: Siapkan file rilis
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/notch.exe dist/notch.exe
+          Compress-Archive -Path dist/notch.exe, LICENSE -DestinationPath "dist/NotchWindows-$env:GITHUB_REF_NAME.zip"
+          Get-ChildItem dist | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content dist/SHA256SUMS.txt -Encoding ascii
+      - name: Bukti asal build
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/notch.exe
+            dist/NotchWindows-*.zip
+      - name: Terbitkan rilis
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = $env:GITHUB_REPOSITORY
+          $notes = @"
+          ## Cara pasang
+
+          1. Unduh **notch.exe** di bawah, lalu buka.
+          2. Windows mungkin menampilkan *"Windows protected your PC"*, karena notch belum punya tanda tangan berbayar. Klik **More info → Run anyway**.
+          3. Pilih **Ya** untuk memasang. Tidak perlu hak Administrator, dan bisa dicabut kapan saja lewat Pengaturan > Aplikasi.
+
+          ## Cek keaslian file
+
+          - SHA-256 tiap file ada di ``SHA256SUMS.txt``.
+          - Bukti bahwa file dibangun GitHub Actions dari kode di repo ini: ``gh attestation verify notch.exe -R $repo``
+
+          ## English
+
+          Download **notch.exe**, open it (if SmartScreen warns, choose *More info → Run anyway*), and pick **Yes** to install. No administrator rights are needed. Verify the build with ``gh attestation verify notch.exe -R $repo``.
+          "@
+          gh release create $env:GITHUB_REF_NAME dist/* --title "NotchWindows $env:GITHUB_REF_NAME" --notes $notes --verify-tag

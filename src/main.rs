@@ -24,6 +24,16 @@ macro_rules! debug_log {
     };
 }
 
+/// Kegagalan yang juga dicatat di versi rilis, ke log lokal (lihat `log`). Jangan sertakan isi
+/// pesan, judul lagu, atau nama file/folder pengguna.
+macro_rules! error_log {
+    ($($arg:tt)*) => {{
+        let message = format!($($arg)*);
+        debug_log!("{message}");
+        crate::log::write(message);
+    }};
+}
+
 mod anim;
 mod app;
 mod audio;
@@ -35,6 +45,9 @@ mod desktop;
 mod dragdrop;
 mod http;
 mod folders;
+mod identity;
+mod install;
+mod log;
 mod lyrics;
 mod media;
 mod messages;
@@ -62,17 +75,48 @@ use windows::Win32::UI::HiDpi::{
 use windows::core::{Result, w};
 
 fn main() -> Result<()> {
-    // Pemeriksaan kabar pesan: `notch.exe --cek-notifikasi [file] [detik]` (lihat README).
+    log::catch_panics();
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("--cek-notifikasi") {
-        let out = args.get(2).map_or_else(|| std::env::temp_dir().join("notch-cek-notifikasi.txt"), Into::into);
-        let listen = std::time::Duration::from_secs(args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0));
-        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        if let Err(e) = messages::diagnose(&out, listen) {
-            debug_log!("hasil pemeriksaan tidak bisa ditulis: {e}");
+    match args.get(1).map(String::as_str) {
+        // Pemeriksaan kabar pesan: `notch.exe --cek-notifikasi [file] [detik]` (lihat README).
+        Some("--cek-notifikasi") => {
+            let out = args.get(2).map_or_else(|| std::env::temp_dir().join("notch-cek-notifikasi.txt"), Into::into);
+            let listen = std::time::Duration::from_secs(args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0));
+            let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            if let Err(e) = messages::diagnose(&out, listen) {
+                debug_log!("hasil pemeriksaan tidak bisa ditulis: {e}");
+            }
+            return Ok(());
         }
+        // Langkah Administrator untuk pesan masuk (lihat `identity`), tanpa masukan dari luar.
+        Some("--siapkan-identitas") => {
+            let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            let result = identity::prepare();
+            if let Err(e) = &result {
+                error_log!("paket identitas gagal disiapkan: {e}");
+            }
+            std::process::exit(i32::from(result.is_err()));
+        }
+        Some("--hapus-sertifikat") => std::process::exit(i32::from(identity::remove_certificates().is_err())),
+        Some("--daftarkan-identitas") => {
+            register_identity();
+            return Ok(());
+        }
+        // Pasang tanpa bertanya.
+        Some("--pasang") => std::process::exit(i32::from(!install::install_quietly())),
+        // Dari Pengaturan > Aplikasi.
+        Some("--cabut") => {
+            install::uninstall(args.get(2).map(String::as_str) == Some("--diam"));
+            return Ok(());
+        }
+        _ => {}
+    }
+    // Ditawari memasang kalau dijalankan dari luar folder pemasangan (misal folder Unduhan).
+    if install::offer() {
         return Ok(());
     }
+    // Sisa salinan sementara dari langkah pendaftaran pesan masuk.
+    let _ = std::fs::remove_file(std::env::temp_dir().join(identity::REGISTER_COPY));
     unsafe {
         // Harus sebelum jendela apa pun dibuat, supaya notch tajam di semua skala layar.
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -85,4 +129,21 @@ fn main() -> Result<()> {
         }
     }
     app::run()
+}
+
+/// Dijalankan dari salinan sementara notch (tanpa identitas paket): tunggu notch lama keluar,
+/// daftarkan paket identitas, lalu jalankan lagi notch dari folder pemasangan.
+fn register_identity() {
+    let Some(dir) = install::dir() else { return };
+    install::stop_running();
+    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    if let Err(e) = identity::register(&dir) {
+        error_log!("paket identitas gagal didaftarkan: {e}");
+        let text = format!("Pesan masuk gagal diaktifkan:
+{e}
+
+Notch tetap bisa dipakai seperti biasa.");
+        install::ask(&text, windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR);
+    }
+    install::launch(&dir.join("notch.exe"), None);
 }

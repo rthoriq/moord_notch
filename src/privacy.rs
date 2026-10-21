@@ -64,7 +64,7 @@ impl Monitor {
         let watcher: IAudioSessionNotification = SessionWatcher { tasks: tasks.clone() }.into();
         let camera_apps = Arc::new(Mutex::new(Vec::new()));
         let camera = start_camera(tasks, camera_apps.clone())
-            .inspect_err(|e| debug_log!("pemantau kamera tidak aktif: {e}"))
+            .inspect_err(|e| error_log!("pemantau kamera tidak aktif: {e}"))
             .ok();
         let mut monitor = Self {
             enumerator,

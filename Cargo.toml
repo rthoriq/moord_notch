@@ -2,7 +2,8 @@
 name = "notch"
 version = "0.10.0"
 edition = "2024"
-description = "Notch pribadi untuk Windows"
+description = "Notch ala MacBook untuk Windows: musik, kabar singkat, shelf file, dan widget kecil"
+license = "MIT"
 publish = false
 
 # Hanya crate resmi Microsoft dari repo windows-rs. Crate kecil di bawah sudah ikut terpasang
@@ -27,6 +28,7 @@ features = [
     "Foundation",
     "Foundation_Collections",
     "Graphics_Imaging",
+    "Management_Deployment",
     "Media_Control",
     "Networking_Connectivity",
     "Storage",
@@ -51,7 +53,9 @@ features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Security",
+    "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
+    "Win32_Storage_Packaging_Appx",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_IO",

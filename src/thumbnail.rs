@@ -41,7 +41,7 @@ pub fn spawn(items: Vec<(u64, PathBuf)>, notify: Notifier) {
         unsafe { CoUninitialize() };
     });
     if let Err(e) = spawned {
-        debug_log!("thread thumbnail gagal dibuat: {e}");
+        error_log!("thread thumbnail gagal dibuat: {e}");
     }
 }
 

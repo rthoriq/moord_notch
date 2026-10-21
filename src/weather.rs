@@ -97,12 +97,12 @@ fn spawn(name: &str, notify: Notifier, work: impl FnOnce() -> Result<Event> + Se
     let spawned = thread::Builder::new().name(name.into()).spawn(move || match work() {
         Ok(event) => reply.send(event),
         Err(e) => {
-            debug_log!("cuaca gagal diambil: {e}");
+            error_log!("cuaca gagal diambil: {e}");
             reply.send(failed);
         }
     });
     if let Err(e) = spawned {
-        debug_log!("thread cuaca gagal dibuat: {e}");
+        error_log!("thread cuaca gagal dibuat: {e}");
     }
 }
 

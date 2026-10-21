@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Paket "sparse": isinya hanya manifest dan logo. notch.exe tetap di target\release
+  Paket "sparse": isinya hanya manifest dan logo. notch.exe tetap di folder pemasangan
   (external location) dan berjalan sebagai aplikasi desktop biasa, hanya saja dengan identitas
   paket. Identitas itu syarat dari Windows untuk membaca notifikasi (WhatsApp, dll.).
+  Paketnya dibuat dan ditandatangani notch sendiri saat pesan masuk diaktifkan (src/identity.rs);
+  versinya mengikuti versi notch.
 
   Izin yang diminta:
   - userNotificationListener: membaca notifikasi, tetap harus disetujui pengguna sekali.

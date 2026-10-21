@@ -7,8 +7,8 @@
 //! pengguna menyalakan "Notifikasi browser".
 //!
 //! Windows hanya mengizinkan ini untuk aplikasi yang punya identitas paket. Jadi fitur ini
-//! baru aktif setelah notch dipasang lewat `packaging/install.ps1` dan pengguna mengizinkan
-//! akses notifikasi satu kali. Tanpa itu, semua fungsi di sini gagal dengan tenang.
+//! baru aktif setelah pesan masuk diaktifkan dari menu tray (lihat `identity`) dan pengguna
+//! mengizinkan akses notifikasi satu kali. Tanpa itu, semua fungsi di sini gagal dengan tenang.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -169,7 +169,7 @@ pub fn request_access(notify: Notifier) {
                 }))
             });
             if let Err(e) = asked {
-                debug_log!("izin notifikasi tidak bisa diminta: {e}");
+                error_log!("izin notifikasi tidak bisa diminta: {e}");
                 notify.send(Event::MessagesAccess(false));
             }
         }

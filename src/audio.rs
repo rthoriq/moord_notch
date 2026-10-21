@@ -47,7 +47,7 @@ impl Monitor {
         self.detach();
         match attach(&self.enumerator, &self.notify) {
             Ok(endpoint) => self.endpoint = Some(endpoint),
-            Err(e) => debug_log!("perangkat audio default tidak bisa dipantau: {e}"),
+            Err(e) => error_log!("perangkat audio default tidak bisa dipantau: {e}"),
         }
         self.mic = attach_mic(&self.enumerator, &self.notify).ok();
         if self.mic.is_none() {

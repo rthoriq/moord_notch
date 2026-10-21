@@ -60,7 +60,7 @@ use crate::services::{self, Event, Services, Task};
 use crate::settings::{Messages, Settings, Size};
 use crate::sound::{self, Sound};
 use crate::folders::{self, Watch};
-use crate::{messages, network, share};
+use crate::{identity, install, messages, network, share};
 use crate::sysinfo::Stats;
 use crate::tray::{self, Command, MenuState, PageCommand, PageMenu, Tray};
 use crate::widgets::Page;
@@ -103,6 +103,12 @@ const TIMER_ALARM: usize = 13;
 const TIMER_WEATHER: usize = 14;
 /// Mode senyap berakhir.
 const TIMER_QUIET: usize = 15;
+/// Sambutan pertama kali muncul sesudah maskot selesai bangun.
+const TIMER_WELCOME: usize = 16;
+const WELCOME_DELAY_MS: u32 = 1_300;
+/// Hasil langkah Administrator untuk pesan masuk (lihat `identity`): 0 berhasil, 1 gagal,
+/// 2 izin Administrator ditolak.
+const WM_IDENTITY: u32 = WM_APP + 7;
 /// Id pintasan Win+Alt+N.
 const HOTKEY_ID: i32 = 1;
 
@@ -468,6 +474,13 @@ struct App {
     last_full: f64,
     rng: u32,
     taskbar_created: u32,
+    /// Pesan dari pemasang untuk keluar dengan rapi (lihat `install::stop_running`).
+    quit_message: u32,
+    /// Sambutan pertama kali sedang ditunggu atau ditampilkan.
+    welcome: bool,
+    /// Langkah Administrator untuk pesan masuk sedang berjalan; kabar hasilnya hanya diterima
+    /// selama ini, bukan dari program lain kapan saja.
+    identity_pending: bool,
 }
 
 impl App {
@@ -478,7 +491,7 @@ impl App {
         let icon = render::make_icon(unsafe { GetSystemMetrics(SM_CXSMICON) })?;
         let seed = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(1);
         let drop = DropRegistration::register(hwnd)
-            .inspect_err(|e| debug_log!("seret-lepas file tidak aktif: {e}"))
+            .inspect_err(|e| error_log!("seret-lepas file tidak aktif: {e}"))
             .ok();
         let (w, h) = View::Pill.size();
         let mut app = Self {
@@ -583,11 +596,14 @@ impl App {
             last_full: 0.0,
             rng: seed | 1,
             taskbar_created: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
+            quit_message: unsafe { RegisterWindowMessageW(install::QUIT_MESSAGE) },
+            welcome: !settings.welcomed,
+            identity_pending: false,
         };
         app.services.thumbnails(app.shelf.items.iter().map(|item| (item.id, item.path.clone())).collect());
         // Kabar kunci/buka kunci laptop, supaya notch tetap tampil di lock screen.
         if let Err(e) = unsafe { WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) } {
-            debug_log!("kabar lock screen tidak aktif: {e}");
+            error_log!("kabar lock screen tidak aktif: {e}");
         }
         app.set_raw_keyboard(app.settings.lock_keys);
         app.messages_available = messages::packaged();
@@ -599,6 +615,9 @@ impl App {
         app.update_watchers();
         app.services.send(Task::WatchNetwork(app.settings.wifi));
         app.fetch_weather();
+        if app.welcome {
+            app.set_timer(TIMER_WELCOME, WELCOME_DELAY_MS);
+        }
         Ok(app)
     }
 
@@ -650,6 +669,8 @@ impl App {
             WM_TIMECHANGE => self.on_clock(),
             WM_POWERBROADCAST => return self.on_power_broadcast(wparam, lparam),
             m if m == self.taskbar_created => self.tray.add(),
+            m if m == self.quit_message => unsafe { PostQuitMessage(0) },
+            WM_IDENTITY => self.on_identity(wparam.0),
             _ => return None,
         }
         Some(LRESULT(0))
@@ -899,6 +920,12 @@ impl App {
                 }
             }
             Hit::CityInput => self.begin_edit(Field::City),
+            Hit::WelcomeDone => {
+                self.welcome = false;
+                self.settings.welcomed = true;
+                self.settings.save();
+                self.set_expanded(false);
+            }
             Hit::CalendarDay(offset) => {
                 self.cal_offset = offset;
                 self.agenda.scroll = 0;
@@ -1090,6 +1117,63 @@ impl App {
         self.refresh();
     }
 
+    /// Aktifkan pesan masuk: jelaskan dulu, lalu jalankan langkah Administrator di thread lain
+    /// supaya notch tetap hidup selama jendela izin Windows terbuka.
+    fn activate_messages(&mut self) {
+        let text = "Aktifkan pesan masuk (WhatsApp, Telegram, dll.)?\n\n\
+                    Windows hanya mengizinkan aplikasi berpaket membaca notifikasi. Untuk itu notch akan:\n\
+                    • membuat paket kecil berisi nama dan logo notch (tanpa program),\n\
+                    • menandatanganinya dengan sertifikat yang dibuat di komputer ini saja,\n\
+                    • memercayai sertifikat itu; kunci rahasianya hanya ada di memori dan langsung\n   \
+                    hilang, jadi tidak bisa dipakai menandatangani apa pun lagi.\n\n\
+                    Perlu izin Administrator sekali, lalu notch dimulai ulang.";
+        let style = windows::Win32::UI::WindowsAndMessaging::MB_YESNO | windows::Win32::UI::WindowsAndMessaging::MB_ICONQUESTION;
+        if self.identity_pending || install::ask(text, style) != windows::Win32::UI::WindowsAndMessaging::IDYES {
+            return;
+        }
+        self.identity_pending = true;
+        let hwnd = self.hwnd.0 as usize;
+        let spawned = std::thread::Builder::new().name("identitas".into()).spawn(move || {
+            let result = match install::run_elevated("--siapkan-identitas") {
+                Ok(true) => 0,
+                Err(e) if install::cancelled(&e) => 2,
+                Ok(false) | Err(_) => 1,
+            };
+            let _ = unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), WM_IDENTITY, WPARAM(result), LPARAM(0)) };
+        });
+        if let Err(e) = spawned {
+            self.identity_pending = false;
+            error_log!("thread identitas gagal dibuat: {e}");
+        }
+    }
+
+    /// Langkah Administrator selesai. Paketnya didaftarkan oleh salinan sementara notch (notch ini
+    /// mungkin memegang identitas paket lama), lalu notch dimulai ulang.
+    fn on_identity(&mut self, result: usize) {
+        if !std::mem::take(&mut self.identity_pending) {
+            return;
+        }
+        match result {
+            0 => {
+                let copy = std::env::temp_dir().join(identity::REGISTER_COPY);
+                match std::env::current_exe().and_then(|exe| std::fs::copy(exe, &copy)) {
+                    Ok(_) => {
+                        install::launch(&copy, Some("--daftarkan-identitas"));
+                        unsafe { PostQuitMessage(0) };
+                    }
+                    Err(e) => error_log!("salinan pendaftar gagal dibuat: {e}"),
+                }
+            }
+            // Izin Administrator ditolak: tidak ada yang berubah.
+            2 => {}
+            _ => {
+                let text = "Pesan masuk gagal diaktifkan. Rinciannya ada di log\n\
+                            (ikon tray > Pengaturan > Buka folder log).";
+                install::ask(text, windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR);
+            }
+        }
+    }
+
     fn shelf_changed(&mut self) {
         self.shelf.save();
         let shelf = &self.shelf;
@@ -1164,7 +1248,7 @@ impl App {
     /// Buka jendela Bagikan Windows untuk file yang dilepas di zona Bagikan.
     fn share_files(&mut self, paths: &[std::path::PathBuf]) {
         if self.share.is_none() {
-            self.share = share::Share::new(self.hwnd).inspect_err(|e| debug_log!("jendela Bagikan tidak tersedia: {e}")).ok();
+            self.share = share::Share::new(self.hwnd).inspect_err(|e| error_log!("jendela Bagikan tidak tersedia: {e}")).ok();
         }
         let Some(share) = &self.share else { return };
         // Windows hanya menampilkan jendela Bagikan untuk jendela yang sedang di depan, sedangkan
@@ -1172,7 +1256,7 @@ impl App {
         self.set_activatable(true);
         bring_to_front(self.hwnd);
         if let Err(e) = share.show(paths) {
-            debug_log!("jendela Bagikan gagal dibuka: {e}");
+            error_log!("jendela Bagikan gagal dibuka: {e}");
         }
         self.set_activatable(false);
     }
@@ -1380,7 +1464,14 @@ impl App {
             }
             TIMER_CLOSE => {
                 self.kill_timer(TIMER_CLOSE);
-                if !self.hovering && !self.editing() && !self.shelf.drop_hover && !self.menu_open && self.slider_drag.is_none() {
+                // Sambutan tetap terbuka sampai tombol "Mengerti" diklik.
+                if !self.hovering
+                    && !self.editing()
+                    && !self.shelf.drop_hover
+                    && !self.menu_open
+                    && self.slider_drag.is_none()
+                    && !self.welcome
+                {
                     self.set_expanded(false);
                 }
             }
@@ -1422,6 +1513,13 @@ impl App {
                 self.refresh();
             }
             TIMER_WEATHER => self.fetch_weather(),
+            TIMER_WELCOME => {
+                self.kill_timer(TIMER_WELCOME);
+                if self.welcome && !self.locked {
+                    self.page = Page::Home;
+                    self.set_expanded(true);
+                }
+            }
             TIMER_QUIET => {
                 self.kill_timer(TIMER_QUIET);
                 self.quiet_until = None;
@@ -1472,7 +1570,7 @@ impl App {
                     .draw_header_wave(self.width.value, self.now(), accent)
                     .and_then(|dirty| self.renderer.present(self.hwnd, self.window_pos(), Some(&dirty)));
                 if let Err(e) = result {
-                    debug_log!("gagal menggambar gelombang: {e}");
+                    error_log!("gagal menggambar gelombang: {e}");
                 }
             } else {
                 self.redraw();
@@ -1490,7 +1588,7 @@ impl App {
                 .draw_wave(self.width.value, self.height.value, self.now(), accent)
                 .and_then(|dirty| self.renderer.present(self.hwnd, self.window_pos(), Some(&dirty)));
             if let Err(e) = result {
-                debug_log!("gagal menggambar gelombang: {e}");
+                error_log!("gagal menggambar gelombang: {e}");
             }
         } else if lyric_moved {
             // Baris baru bisa lebih panjang atau pendek: pilnya ikut menyesuaikan.
@@ -1965,7 +2063,7 @@ impl App {
                 self.raw_keyboard = on;
                 self.lock_keys = lock_key_states();
             }
-            Err(e) => debug_log!("input keyboard tidak bisa {}: {e}", if on { "didengarkan" } else { "dilepas" }),
+            Err(e) => error_log!("input keyboard tidak bisa {}: {e}", if on { "didengarkan" } else { "dilepas" }),
         }
     }
 
@@ -2213,7 +2311,8 @@ impl App {
             // Beranda lebar dengan kalender (tidak di lock screen: agenda itu pribadi), atau
             // dengan kolom lirik di samping pemutar.
             let calendar = self.settings.calendar && !self.locked;
-            if self.page == Page::Home && (calendar || self.lyric_column()) { View::PanelWide } else { View::Panel }
+            let wide = self.page == Page::Home && (calendar || self.lyric_column()) && !self.welcome;
+            if wide { View::PanelWide } else { View::Panel }
         } else if self.hud_visible {
             if self.compact_hud() { View::Strip } else { View::Hud }
         } else if slim {
@@ -2494,7 +2593,7 @@ impl App {
         self.monitor = monitor;
         self.monitor_rect = rect;
         if let Err(e) = self.renderer.set_dpi(scaled_dpi(monitor_dpi(monitor), self.settings.size)) {
-            debug_log!("gagal mengganti DPI: {e}");
+            error_log!("gagal mengganti DPI: {e}");
         }
         self.redraw();
     }
@@ -2636,7 +2735,7 @@ impl App {
                 .draw_eyes(self.width.value, self.height.value, self.eyes())
                 .and_then(|dirty| self.renderer.present(self.hwnd, self.window_pos(), Some(&dirty)));
             if let Err(e) = result {
-                debug_log!("gagal menggambar mata: {e}");
+                error_log!("gagal menggambar mata: {e}");
             }
         } else {
             self.redraw();
@@ -2721,10 +2820,11 @@ impl App {
             calendar: calendar.as_ref(),
             agenda_draft: self.agenda.draft.as_deref(),
             download: download.as_deref(),
+            welcome: self.welcome && self.expanded && !self.locked,
         };
         let result = self.renderer.draw(&scene).and_then(|_| self.renderer.present(self.hwnd, self.window_pos(), None));
         if let Err(e) = result {
-            debug_log!("gagal menggambar: {e}");
+            error_log!("gagal menggambar: {e}");
         }
         self.last_full = now;
         self.lyric_shown = lyric.and_then(|(index, _)| index);
@@ -2828,6 +2928,7 @@ impl App {
             messages_available: self.messages_available,
             messages_denied: self.messages_denied,
             hotkey_taken: self.settings.hotkey && !self.hotkey,
+            can_activate: install::is_installed_copy(),
         }
     }
 
@@ -2840,7 +2941,7 @@ impl App {
             }
             Command::ToggleAutostart => {
                 if let Err(e) = autostart::set_enabled(!autostart::is_enabled()) {
-                    debug_log!("gagal mengubah autostart: {e}");
+                    error_log!("gagal mengubah autostart: {e}");
                 }
             }
             Command::ToggleLyrics => {
@@ -2956,6 +3057,13 @@ impl App {
                 self.settings.save();
                 self.renderer.set_theme(theme);
                 self.redraw();
+            }
+            Command::ActivateMessages => self.activate_messages(),
+            Command::OpenLogs => {
+                if let Some(folder) = crate::log::folder() {
+                    let _ = std::fs::create_dir_all(&folder);
+                    let _ = std::process::Command::new("explorer.exe").arg(folder).spawn();
+                }
             }
             Command::Exit => unsafe { PostQuitMessage(0) },
         }

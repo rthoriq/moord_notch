@@ -124,7 +124,7 @@ impl Monitor {
             Some((session, _)) => match read(session, flags, self.last.as_ref(), &mut self.next_art_id) {
                 Ok(snapshot) => Some(snapshot),
                 Err(e) => {
-                    debug_log!("gagal membaca media: {e}");
+                    error_log!("gagal membaca media: {e}");
                     None
                 }
             },
@@ -145,7 +145,7 @@ impl Monitor {
             Command::Seek(ticks) => session.TryChangePlaybackPositionAsync(ticks),
         };
         if let Err(e) = operation.and_then(|op| op.join()) {
-            debug_log!("perintah media {command:?} gagal: {e}");
+            error_log!("perintah media {command:?} gagal: {e}");
         }
     }
 

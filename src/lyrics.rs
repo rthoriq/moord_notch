@@ -80,14 +80,14 @@ pub fn spawn(request: Request, notify: Notifier) {
             Ok(Some(lrc)) => parse(&lrc),
             Ok(None) => Vec::new(),
             Err(e) => {
-                debug_log!("lirik gagal diambil: {e}");
+                error_log!("lirik gagal diambil: {e}");
                 Vec::new()
             }
         };
         notify.send(Event::Lyrics(Lyrics { key: request.key, lines }));
     });
     if let Err(e) = spawned {
-        debug_log!("thread lirik gagal dibuat: {e}");
+        error_log!("thread lirik gagal dibuat: {e}");
     }
 }
 

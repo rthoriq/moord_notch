@@ -284,6 +284,12 @@ impl Renderer {
         // sedikit turun.
         self.begin_zoom(0.8 + 0.2 * a, (x0 + x1) / 2.0);
         let dy = (1.0 - a) * -6.0;
+        if s.welcome {
+            self.set_offset(0.0, dy);
+            self.welcome_page(s, x0, x1, a);
+            self.end_zoom();
+            return;
+        }
         match s.page_from {
             Some((from, t, dir)) => {
                 let eased = 1.0 - (1.0 - t).powi(3);
@@ -438,6 +444,29 @@ impl Renderer {
             self.text(line, &self.fonts.lyric_line, rect(l, y - 19.0, r, y + 19.0), color, a * visible);
         }
         self.pop_clip();
+    }
+
+    /// Sambutan saat notch pertama kali dijalankan: cara memakai notch dalam empat baris.
+    fn welcome_page(&self, s: &Scene, x0: f32, x1: f32, a: f32) {
+        let p = &self.pal;
+        let (l, r) = (x0 + MARGIN, x1 - MARGIN);
+        self.text("Halo! Ini notch-mu", &self.fonts.title, rect(l, HEADER_Y - 10.0, r - 60.0, HEADER_Y + 10.0), p.text, a);
+        self.eyes(r - 18.0, HEADER_Y + 2.0, 4.2, 12.0, 10.0, s.eyes, a);
+        let tips = [
+            "Sentuh notch dengan kursor untuk membukanya",
+            "Roda mouse atau panah di tepi untuk pindah halaman",
+            "Pengaturan: klik ikon maskot di system tray",
+            "Lirik, cuaca, dan pesan masuk mati sampai kamu nyalakan",
+        ];
+        for (i, tip) in tips.iter().enumerate() {
+            let y = 48.0 + i as f32 * 19.0;
+            self.circle(l + 4.0, y, 2.5, p.accent, a);
+            self.text(tip, &self.fonts.caption, rect(l + 14.0, y - 9.0, r, y + 9.0), p.soft, a);
+        }
+        let button = rect(r - 110.0, ROW_Y - 12.0, r, ROW_Y + 12.0);
+        let over = s.hovered == Some(Hit::WelcomeDone);
+        self.chip(button, "Mengerti", Some(if over { BLUE_LIGHT } else { p.accent }), WHITE, a);
+        self.hit(button, Hit::WelcomeDone);
     }
 
     /// Panah kiri/kanan dan titik penanda halaman yang tampil.

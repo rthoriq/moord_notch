@@ -151,6 +151,8 @@ pub struct Settings {
     pub theme: Theme,
     pub size: Size,
     pub pages: Pages,
+    /// Sambutan pertama kali sudah ditutup.
+    pub welcomed: bool,
 }
 
 impl Default for Settings {
@@ -175,13 +177,21 @@ impl Default for Settings {
             theme: Theme::default(),
             size: Size::default(),
             pages: Pages::default(),
+            // File pengaturan lama tanpa kunci ini berarti notch sudah lama dipakai.
+            welcomed: true,
         }
     }
 }
 
 impl Settings {
     pub fn load() -> Self {
-        Self::parse(&store::load(FILE))
+        let lines = store::load(FILE);
+        let mut settings = Self::parse(&lines);
+        // Belum ada file pengaturan: notch baru pertama kali dijalankan di komputer ini.
+        if lines.is_empty() {
+            settings.welcomed = false;
+        }
+        settings
     }
 
     pub fn save(&self) {
@@ -207,6 +217,7 @@ impl Settings {
                 "kabar-ringkas" => settings.compact_hud = yes,
                 "kalender" => settings.calendar = yes,
                 "panel-lirik" => settings.lyric_panel = yes,
+                "sambutan" => settings.welcomed = yes,
                 "halaman" => settings.pages = Pages::parse(value),
                 "ukuran" => {
                     if let Some(size) = Size::ALL.into_iter().find(|s| s.key() == value) {
@@ -253,6 +264,7 @@ impl Settings {
             format!("tema={}", self.theme.key()),
             format!("ukuran={}", self.size.key()),
             format!("halaman={}", self.pages.to_text()),
+            format!("sambutan={}", yes(self.welcomed)),
         ]
     }
 }
@@ -285,6 +297,7 @@ mod tests {
             theme: Theme::Glass,
             size: Size::Large,
             pages,
+            welcomed: false,
         };
         assert_eq!(Settings::parse(&settings.lines()), settings);
         let messy = vec!["tema = tidak-ada".to_string(), "sampah".to_string()];

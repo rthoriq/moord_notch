@@ -230,6 +230,8 @@ pub enum Hit {
     AgendaInput,
     /// Zona "Bagikan" selama file diseret ke notch.
     DropShare,
+    /// Tombol "Mengerti" di sambutan pertama kali.
+    WelcomeDone,
 }
 
 impl Hit {
@@ -438,6 +440,8 @@ pub struct Scene<'a> {
     pub calendar: Option<&'a CalendarView>,
     /// Agenda yang sedang diketik.
     pub agenda_draft: Option<&'a str>,
+    /// Panel berisi sambutan pertama kali, bukan halaman.
+    pub welcome: bool,
     pub hovered: Option<Hit>,
     /// Detik berjalan, untuk animasi gelombang musik.
     pub seconds: f64,
@@ -782,7 +786,7 @@ impl Renderer {
         self.art = match self.bitmap_brush(ART_PX, ART_PX, &art.pixels) {
             Ok(brush) => Some((art.id, brush)),
             Err(e) => {
-                debug_log!("sampul gagal dibuat: {e}");
+                error_log!("sampul gagal dibuat: {e}");
                 None
             }
         };
@@ -793,7 +797,7 @@ impl Renderer {
             Ok(brush) => {
                 self.thumbs.insert(thumb.id, (brush, thumb.width as f32, thumb.height as f32));
             }
-            Err(e) => debug_log!("thumbnail gagal dibuat: {e}"),
+            Err(e) => error_log!("thumbnail gagal dibuat: {e}"),
         }
     }
 
@@ -811,7 +815,7 @@ impl Renderer {
             Ok(brush) => {
                 self.logos.insert(aumid.to_string(), brush);
             }
-            Err(e) => debug_log!("logo aplikasi gagal dibuat: {e}"),
+            Err(e) => error_log!("logo aplikasi gagal dibuat: {e}"),
         }
     }
 
@@ -1426,6 +1430,27 @@ impl Renderer {
 
 /// Ikon tray: kotak gelap dengan sepasang mata, maskot yang sama dengan di notch.
 pub fn make_icon(size: i32) -> Result<HICON> {
+    let surface = icon_surface(size)?;
+    unsafe {
+        // Bitmap harus dilepas dari DC sebelum dipakai membuat ikon.
+        SelectObject(surface.dc, surface.old);
+        let mask = CreateBitmap(size, size, 1, 1, None);
+        let info = ICONINFO {
+            fIcon: true.into(),
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: mask,
+            hbmColor: surface.bitmap,
+        };
+        let icon = CreateIconIndirect(&info);
+        let _ = DeleteObject(mask.into());
+        icon
+    }
+}
+
+/// Maskot ikon berukuran `size`×`size`, dengan alfa lurus seperti yang dipakai ikon Windows.
+/// Dipakai ikon tray dan, lewat tes, file `packaging/notch.ico` untuk notch.exe.
+fn icon_surface(size: i32) -> Result<Surface> {
     let s = size as f32;
     unsafe {
         let factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
@@ -1463,20 +1488,7 @@ pub fn make_icon(size: i32) -> Result<HICON> {
                 *px = (a << 24) | (un((*px >> 16) & 0xFF) << 16) | (un((*px >> 8) & 0xFF) << 8) | un(*px & 0xFF);
             }
         }
-
-        // Bitmap harus dilepas dari DC sebelum dipakai membuat ikon.
-        SelectObject(surface.dc, surface.old);
-        let mask = CreateBitmap(size, size, 1, 1, None);
-        let info = ICONINFO {
-            fIcon: true.into(),
-            xHotspot: 0,
-            yHotspot: 0,
-            hbmMask: mask,
-            hbmColor: surface.bitmap,
-        };
-        let icon = CreateIconIndirect(&info);
-        let _ = DeleteObject(mask.into());
-        icon
+        Ok(surface)
     }
 }
 

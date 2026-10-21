@@ -65,7 +65,7 @@ impl Watch {
         match spawned {
             Ok(thread) => Some(Self { stop, thread: Some(thread) }),
             Err(e) => {
-                debug_log!("pemantau folder gagal dibuat: {e}");
+                error_log!("pemantau folder gagal dibuat: {e}");
                 let _ = unsafe { CloseHandle(stop) };
                 None
             }

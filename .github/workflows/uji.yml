@@ -1,0 +1,24 @@
+# Tes dan build setiap ada perubahan di main dan setiap pull request.
+name: Uji
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  uji:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Pasang Rust (versi dari rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Tes
+        run: cargo test --locked
+      - name: Build rilis
+        run: cargo build --release --locked

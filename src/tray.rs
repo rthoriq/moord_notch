@@ -35,6 +35,8 @@ const ID_MEETING: usize = 14;
 const ID_WEATHER: usize = 15;
 const ID_COMPACT_HUD: usize = 16;
 const ID_CALENDAR: usize = 17;
+const ID_ACTIVATE: usize = 18;
+const ID_LOGS: usize = 19;
 /// Pilihan berurutan mulai dari id ini.
 const ID_MESSAGES: usize = 50;
 const ID_PAGES: usize = 60;
@@ -64,6 +66,9 @@ pub enum Command {
     ToggleWeather,
     ToggleCompactHud,
     ToggleCalendar,
+    /// Siapkan identitas paket supaya pesan masuk bisa dibaca (lihat `identity`).
+    ActivateMessages,
+    OpenLogs,
     /// Tampilkan/sembunyikan halaman panel.
     TogglePage(Page),
     Messages(Messages),
@@ -99,6 +104,8 @@ pub struct MenuState {
     pub messages_denied: bool,
     /// Pintasan keyboard gagal didaftarkan (sudah dipakai aplikasi lain).
     pub hotkey_taken: bool,
+    /// Notch berjalan dari folder pemasangan, jadi pesan masuk bisa diaktifkan.
+    pub can_activate: bool,
 }
 
 pub struct Tray {
@@ -164,8 +171,10 @@ pub fn show_menu(hwnd: HWND, state: MenuState) -> Option<Command> {
             let flags = check(*mode == s.messages) | if usable { MF_UNCHECKED } else { MF_GRAYED };
             item(messages, flags, ID_MESSAGES + i, mode.label());
         }
-        if !state.messages_available {
-            item(messages, MF_GRAYED, 0, "Perlu dipasang sebagai paket (lihat README)");
+        if !state.messages_available && state.can_activate {
+            item(messages, MF_UNCHECKED, ID_ACTIVATE, "Aktifkan pesan masuk… (izin Administrator sekali)");
+        } else if !state.messages_available {
+            item(messages, MF_GRAYED, 0, "Pasang notch dulu untuk memakai pesan masuk");
         } else if state.messages_denied && s.messages != Messages::Off {
             item(messages, MF_GRAYED, 0, "Izin ditolak: Pengaturan Windows > Privasi > Notifikasi");
         }
@@ -195,6 +204,8 @@ pub fn show_menu(hwnd: HWND, state: MenuState) -> Option<Command> {
         item(options, check(s.screenshots), ID_SCREENSHOTS, "Screenshot masuk shelf");
         // Submenu ikut dihancurkan bersama menu induknya.
         let _ = AppendMenuW(options, MF_POPUP, messages.0 as usize, w!("Pesan masuk"));
+        let _ = AppendMenuW(options, MF_SEPARATOR, 0, PCWSTR::null());
+        item(options, MF_UNCHECKED, ID_LOGS, "Buka folder log");
 
         for (i, theme) in Theme::ALL.iter().enumerate() {
             item(themes, check(*theme == s.theme), ID_THEME + i, theme.label());
@@ -237,6 +248,8 @@ pub fn show_menu(hwnd: HWND, state: MenuState) -> Option<Command> {
             ID_WEATHER => Some(Command::ToggleWeather),
             ID_COMPACT_HUD => Some(Command::ToggleCompactHud),
             ID_CALENDAR => Some(Command::ToggleCalendar),
+            ID_ACTIVATE => Some(Command::ActivateMessages),
+            ID_LOGS => Some(Command::OpenLogs),
             ID_EXIT => Some(Command::Exit),
             id if id >= ID_THEME => Theme::ALL.get(id - ID_THEME).map(|t| Command::Theme(*t)),
             id if id >= ID_SIZE => Size::ALL.get(id - ID_SIZE).map(|s| Command::Size(*s)),

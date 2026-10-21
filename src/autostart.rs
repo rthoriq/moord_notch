@@ -5,30 +5,43 @@ use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RRF_RT_REG_SZ, RegCloseKey, RegDeleteValueW,
     RegGetValueW, RegOpenKeyExW, RegSetValueExW,
 };
-use windows::core::{PCWSTR, Result, w};
+use windows::core::{HSTRING, PCWSTR, Result, w};
 
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-const VALUE: PCWSTR = w!("NotchWindows");
+
+/// Nama nilai di kunci Run; lain di mode uji pemasang (lihat `install::name`).
+fn value() -> HSTRING {
+    HSTRING::from(crate::install::name())
+}
 
 pub fn is_enabled() -> bool {
-    unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, VALUE, RRF_RT_REG_SZ, None, None, None).is_ok() }
+    unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, &value(), RRF_RT_REG_SZ, None, None, None).is_ok() }
 }
 
 pub fn set_enabled(enable: bool) -> Result<()> {
+    if enable {
+        return set_command(&std::env::current_exe().unwrap_or_default());
+    }
     unsafe {
         let mut key = HKEY::default();
         RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, None, KEY_SET_VALUE, &mut key).ok()?;
-        let status = if enable {
-            let exe = std::env::current_exe().unwrap_or_default();
-            let command: Vec<u16> = format!("\"{}\"", exe.display()).encode_utf16().chain([0]).collect();
-            let bytes = std::slice::from_raw_parts(command.as_ptr().cast::<u8>(), command.len() * 2);
-            RegSetValueExW(key, VALUE, None, REG_SZ, Some(bytes))
-        } else {
-            match RegDeleteValueW(key, VALUE) {
-                ERROR_FILE_NOT_FOUND => ERROR_SUCCESS,
-                other => other,
-            }
+        let status = match RegDeleteValueW(key, &value()) {
+            ERROR_FILE_NOT_FOUND => ERROR_SUCCESS,
+            other => other,
         };
+        let _ = RegCloseKey(key);
+        status.ok()
+    }
+}
+
+/// Jalankan `exe` bersama Windows (dipakai juga saat memasang, untuk notch di folder pemasangan).
+pub fn set_command(exe: &std::path::Path) -> Result<()> {
+    unsafe {
+        let mut key = HKEY::default();
+        RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, None, KEY_SET_VALUE, &mut key).ok()?;
+        let command: Vec<u16> = format!("\"{}\"", exe.display()).encode_utf16().chain([0]).collect();
+        let bytes = std::slice::from_raw_parts(command.as_ptr().cast::<u8>(), command.len() * 2);
+        let status = RegSetValueExW(key, &value(), None, REG_SZ, Some(bytes));
         let _ = RegCloseKey(key);
         status.ok()
     }

@@ -112,7 +112,7 @@ impl Services {
             .name("layanan".into())
             .spawn(move || run(worker_tasks, task_rx, worker_notify));
         if let Err(e) = spawned {
-            debug_log!("thread layanan gagal dibuat: {e}");
+            error_log!("thread layanan gagal dibuat: {e}");
         }
         Self { tasks, events, notify }
     }
@@ -208,7 +208,7 @@ fn run(tasks: Sender<Task>, rx: Receiver<Task>, notify: Notifier) {
                     brightness_due = None;
                     let screen = screen.get_or_insert_with(brightness::Brightness::new);
                     if let Err(e) = screen.as_ref().map(|s| s.set(percent)) {
-                        debug_log!("kecerahan tidak bisa diubah: {e}");
+                        error_log!("kecerahan tidak bisa diubah: {e}");
                     }
                 }
                 if network_due.is_some_and(|due| due <= now) {
@@ -317,7 +317,7 @@ fn started<T>(name: &str, result: Result<T>) -> Option<T> {
     match result {
         Ok(monitor) => Some(monitor),
         Err(e) => {
-            debug_log!("layanan {name} tidak aktif: {e}");
+            error_log!("layanan {name} tidak aktif: {e}");
             None
         }
     }
