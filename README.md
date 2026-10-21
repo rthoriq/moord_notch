@@ -215,6 +215,13 @@ Mengikuti aplikasi notch populer di Mac (Boring Notch, NotchDrop, NotchNook):
   sedang dinyanyikan putih tebal (sampai dua baris), baris berikutnya redup; saat baris berganti
   semuanya bergulir naik. Tombolnya hanya muncul kalau "Lirik lagu (memakai internet)" di menu
   tray sudah dinyalakan, dan pilihannya diingat.
+- **Lirik untuk YouTube dan YouTube Music** (di browser): judul video seperti
+  "Mahalini - Sial (Official Music Video)" dari channel "MahaliniVEVO" dirapikan dulu jadi judul
+  "Sial" dan artis "Mahalini" (tambahan seperti "(Official Lyric Video)", "[MV]", "| Lirik",
+  "ft. …", serta channel "… - Topic" dibuang). Pencarian bertahap: judul asli, judul yang dirapikan,
+  lalu pencarian bebas; dari semua hasil dipilih versi yang durasinya paling dekat dengan lagu yang
+  diputar, supaya lirik tidak telat atau kecepatan. Lirik dari YouTube sendiri tidak dibaca (tidak
+  ada jalur resmi untuk itu).
 - **Seret bar untuk lompat**: bar progres menebal saat disorot; klik atau seret untuk lompat ke
   bagian lagu lain. Hanya untuk aplikasi yang mengizinkannya di kontrol media Windows (misal Spotify
   dan YouTube di browser); kalau tidak, bar tidak bisa diklik.
