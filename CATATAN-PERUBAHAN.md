@@ -245,3 +245,9 @@ Mengikuti aplikasi notch populer di Mac (Boring Notch, NotchDrop, NotchNook):
 - **Ikon dan info versi** di notch.exe ("NotchWindows" di Task Manager dan properti file).
 - **Build dan rilis otomatis** di GitHub Actions, lengkap dengan checksum dan bukti asal build.
 - Lisensi MIT.
+
+## Perbaikan setelah Tahap 10
+
+- Saat jendela aktif di-maximize, notch tetap menciut jadi garis tipis walau kamera atau mikrofon
+  sedang dipakai. Titik privasinya (hijau = kamera, oranye = mikrofon) tetap tampil di ujung kanan
+  garis, jadi ruang tab tetap lega tanpa kehilangan tanda privasi.

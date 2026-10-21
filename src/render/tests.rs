@@ -586,6 +586,27 @@ fn hits_follow_drawing() {
 
 const MARGIN_FOR_TEST: f32 = 32.0;
 
+/// Garis tipis saat jendela di-maximize tetap menunjukkan titik privasi selama mikrofon dipakai.
+#[test]
+fn slim_line_keeps_privacy_dot() {
+    let data = sample();
+    let probe = |privacy: &Usage| {
+        let mut renderer = Renderer::new(96, Theme::Black).unwrap();
+        let mut scene = scene_for(&data, View::Slim, Page::Home, false);
+        scene.privacy = privacy;
+        renderer.draw(&scene).unwrap();
+        let _ = unsafe { GdiFlush() };
+        let width = renderer.surface.width as usize;
+        let (w, h) = View::Slim.size();
+        let x = (CANVAS.0 / 2.0 + w / 2.0 - 8.0) as usize;
+        renderer.surface.pixels()[(h / 2.0) as usize * width + x]
+    };
+    let red = |px: u32| (px >> 16) & 0xFF;
+    // Contoh: Discord sedang memakai mikrofon, jadi titiknya oranye.
+    assert!(red(probe(&data.privacy)) > 150, "titik privasi tidak terlihat");
+    assert_eq!(red(probe(&Usage::default())), 0, "tanpa kamera/mikrofon garisnya polos");
+}
+
 /// Tulis ulang `packaging/notch.ico` dari maskot ikon tray (ikon notch.exe di menu Start,
 /// Explorer, dan Pengaturan > Aplikasi). Jalankan dengan
 /// `cargo test write_app_icon -- --ignored` setelah maskotnya diubah.

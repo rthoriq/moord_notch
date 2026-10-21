@@ -2303,10 +2303,9 @@ impl App {
     }
 
     fn wanted_view(&self) -> View {
-        // Titik privasi lebih penting daripada ruang tab: selama kamera/mikrofon dipakai,
-        // notch tidak menciut jadi garis tipis.
-        // Garis tipis yang disentuh kursor kembali jadi pil dulu.
-        let slim = self.mode == Mode::Maximized && !self.privacy.active() && !self.locked && !self.peek;
+        // Garis tipis saat jendela aktif di-maximize, juga selama kamera/mikrofon dipakai (titik
+        // privasinya ikut tampil di ujung garis). Garis yang disentuh kursor kembali jadi pil dulu.
+        let slim = self.mode == Mode::Maximized && !self.locked && !self.peek;
         if self.expanded {
             // Beranda lebar dengan kalender (tidak di lock screen: agenda itu pribadi), atau
             // dengan kolom lirik di samping pemutar.

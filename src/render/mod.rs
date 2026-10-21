@@ -518,6 +518,8 @@ const RADIUS_MIN: f32 = 13.0;
 const RADIUS_MAX: f32 = 28.0;
 /// Jangkauan bayangan di bawah notch.
 const SHADOW: f32 = 16.0;
+/// Notch serendah ini dianggap garis tipis (lihat `View::Slim`).
+const SLIM_MAX_H: f32 = 12.0;
 /// Pil lirik melebar mengikuti panjang baris sampai batas ini; kalau masih kurang, jadi dua baris.
 const LYRIC_MIN_W: f32 = 300.0;
 const LYRIC_MAX_W: f32 = 480.0;
@@ -900,6 +902,10 @@ impl Renderer {
             }
             if panel > 0.01 {
                 self.draw_panel(scene, x0, x1, panel);
+            }
+            // Garis tipis (jendela di-maximize) tanpa isi: titik privasi tetap di ujung kanannya.
+            if h < SLIM_MAX_H && scene.alpha.iter().all(|a| *a < 0.01) {
+                self.privacy_dot(scene.privacy, x1 - 8.0, h / 2.0, 1.0);
             }
             self.target.PopAxisAlignedClip();
             self.target.EndDraw(None, None)
