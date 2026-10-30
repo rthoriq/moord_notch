@@ -26,7 +26,7 @@ use windows::Win32::UI::Shell::{
     SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, SHGetKnownFolderPath, ShellExecuteExW, ShellLink,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetWindowThreadProcessId, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONQUESTION,
+    AllowSetForegroundWindow, FindWindowW, GetWindowThreadProcessId, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONQUESTION,
     MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MB_YESNOCANCEL, MESSAGEBOX_RESULT, MESSAGEBOX_STYLE, MessageBoxW,
     PostMessageW, RegisterWindowMessageW, SW_HIDE,
 };
@@ -38,6 +38,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const NAME: &str = "NotchWindows";
 /// Pesan untuk meminta notch yang sedang berjalan keluar dengan rapi (ikon tray ikut hilang).
 pub const QUIT_MESSAGE: PCWSTR = w!("NotchWindows.Keluar");
+/// Pesan untuk notch yang sedang berjalan: buka jendela pengaturan.
+pub const SETTINGS_MESSAGE: PCWSTR = w!("NotchWindows.Pengaturan");
 /// Kelas jendela notch (lihat `app`), untuk menemukan notch yang sedang berjalan.
 const WINDOW_CLASS: PCWSTR = w!("NotchWindow");
 const TITLE: PCWSTR = w!("NotchWindows");
@@ -224,6 +226,20 @@ fn remove_later(dir: &Path) {
     }
 }
 
+/// Minta notch yang sedang berjalan membuka jendela pengaturannya, dan izinkan jendela itu maju ke
+/// depan (yang diizinkan Windows hanya proses yang sedang dipakai pengguna, yaitu proses ini).
+pub fn show_settings_of_running() {
+    unsafe {
+        let Ok(hwnd) = FindWindowW(WINDOW_CLASS, PCWSTR::null()) else { return };
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid != 0 {
+            let _ = AllowSetForegroundWindow(pid);
+        }
+        let _ = PostMessageW(Some(hwnd), RegisterWindowMessageW(SETTINGS_MESSAGE), WPARAM(0), LPARAM(0));
+    }
+}
+
 /// Minta notch yang sedang berjalan keluar. Versi lama yang belum mengenal pesan itu dihentikan.
 pub fn stop_running() {
     unsafe {
@@ -300,12 +316,18 @@ pub fn cancelled(e: &windows::core::Error) -> bool {
 }
 
 /// Notch terpasang yang berjalan memperbarui catatannya di Pengaturan > Aplikasi (misal setelah
-/// diperbarui), dan membuat pintasan menu Start kalau belum ada.
+/// diperbarui), membuat pintasan menu Start kalau belum ada, dan melengkapi logo paket identitas
+/// (tanpa logo itu, jendela Pengaturan tampil tanpa ikon di taskbar).
 fn refresh_entry(installed: &Path) {
     if installed_version().as_deref() != Some(VERSION)
         && let Err(e) = write_entry(installed)
     {
         error_log!("catatan Aplikasi terpasang gagal diperbarui: {e}");
+    }
+    if let Some(dir) = installed.parent()
+        && let Err(e) = identity::write_assets(dir)
+    {
+        error_log!("logo paket identitas gagal ditulis: {e}");
     }
     let missing = shortcut_path().is_some_and(|link| !link.exists());
     // Pintasan dibuat lewat COM; di thread utama COM baru disiapkan nanti oleh seret-lepas file

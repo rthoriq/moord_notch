@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::widgets::shelf::Shelf;
+
+mod aset;
+mod video;
 use crate::widgets::tasks::Tasks;
 
 /// Data contoh untuk semua halaman.
@@ -58,7 +61,7 @@ fn sample() -> Sample {
             week: vec![(1500, 'S'), (2000, 'S'), (750, 'R'), (1750, 'K'), (2250, 'J'), (1000, 'S'), (1250, 'M')],
             next: Some("19:37".into()),
         },
-        privacy: Usage { camera: vec![], microphone: vec!["Discord".into()] },
+        privacy: Usage { microphone: vec!["Discord".into()], ..Usage::default() },
         system: Stats {
             cpu: 23.0,
             gpu: Some(64.0),
@@ -116,6 +119,7 @@ struct State<'a> {
     lyric_mix: f32,
     lyrics_button: Option<bool>,
     welcome: bool,
+    call: Option<&'a CallView>,
 }
 
 impl<'a> State<'a> {
@@ -147,8 +151,14 @@ impl<'a> State<'a> {
             lyric_mix: 0.0,
             lyrics_button: None,
             welcome: false,
+            call: None,
         }
     }
+}
+
+/// Panggilan contoh di Zoom; `muted` = mikrofonnya dibisukan.
+fn sample_call(muted: bool) -> CallView {
+    CallView { app: "Zoom".into(), clock: "12:34".into(), muted: Some(muted), camera: !muted }
 }
 
 /// Lirik contoh (karangan sendiri) dengan baris ketiga sedang dinyanyikan.
@@ -163,6 +173,7 @@ fn sample_lyrics(scroll: f32) -> LyricsView {
         ],
         scroll,
         status: None,
+        retry: false,
     }
 }
 
@@ -262,9 +273,18 @@ fn preview_states() {
     other_day.events.clear();
     let lyrics = sample_lyrics(1.0);
     let lyrics_scrolling = sample_lyrics(0.4);
-    let searching = LyricsView { lines: Default::default(), scroll: 1.0, status: Some("Mencari lirik…") };
+    let searching = LyricsView { lines: Default::default(), scroll: 1.0, status: Some("Mencari lirik…"), retry: false };
+    let busy = LyricsView { status: Some("Server lirik sibuk, mencoba lagi…"), retry: true, ..searching.clone() };
+    let missing = LyricsView { status: Some("Lirik tidak tersedia"), retry: true, ..searching.clone() };
     let seeking = MediaView { seeking: true, progress: Some(0.62), elapsed: "1:46".into(), remaining: "-1:07".into(), ..sample().media };
     let agenda_due = Hud::Agenda { text: "Rapat tim".into(), time: "09.00".into() };
+    let call = sample_call(false);
+    let call_muted = sample_call(true);
+    let call_long = CallView { clock: "1:02:03".into(), ..sample_call(false) };
+    let call_locked = CallView { app: String::new(), ..sample_call(false) };
+    let call_voice = CallView { camera: false, ..sample_call(false) };
+    let mic_off = Hud::Mic { muted: true };
+    let call_ended = Hud::CallEnded { app: "Zoom".into(), length: "42 menit".into() };
     let message_locked =
         Hud::Message {
         app: String::new(),
@@ -293,6 +313,8 @@ fn preview_states() {
         State { media: true, lyrics_button: Some(true), lyrics: Some(&lyrics), lyric_mix: 0.5, size: Some((560.0, 156.0)), ..State::new("player_lyrics_growing", View::PanelWide, Page::Home) },
         State { media: true, lyrics_button: Some(true), lyrics: Some(&lyrics_scrolling), lyric_mix: 1.0, ..State::new("player_lyrics_scroll", View::PanelWide, Page::Home) },
         State { media: true, lyrics_button: Some(true), lyrics: Some(&searching), lyric_mix: 1.0, ..State::new("player_lyrics_searching", View::PanelWide, Page::Home) },
+        State { media: true, lyrics_button: Some(true), lyrics: Some(&busy), lyric_mix: 1.0, ..State::new("player_lyrics_busy", View::PanelWide, Page::Home) },
+        State { media: true, lyrics_button: Some(true), lyrics: Some(&missing), lyric_mix: 1.0, hovered: Some(Hit::LyricsRetry), ..State::new("player_lyrics_retry", View::PanelWide, Page::Home) },
         State { media: true, lyrics_button: Some(true), calendar: Some(&calendar), lyrics: Some(&lyrics), lyric_mix: 1.0, weather: Some("29° Cerah"), ..State::new("player_lyrics_calendar", View::PanelWide, Page::Home) },
         State { media: true, lyrics_button: Some(true), calendar: Some(&calendar), lyrics: Some(&lyrics), lyric_mix: 0.45, ..State::new("player_lyrics_swap", View::PanelWide, Page::Home) },
         State { theme: Theme::Glass, media: true, lyrics_button: Some(true), lyrics: Some(&lyrics), lyric_mix: 1.0, ..State::new("player_lyrics_glass", View::PanelWide, Page::Home) },
@@ -357,6 +379,24 @@ fn preview_states() {
         State { media: true, lyrics_button: Some(false), ..State::new("player_seeking", View::Panel, Page::Home) },
         State { welcome: true, hovered: Some(Hit::WelcomeDone), ..State::new("welcome", View::Panel, Page::Home) },
         State { welcome: true, theme: Theme::Light, ..State::new("welcome_light", View::Panel, Page::Home) },
+        State { call: Some(&call), ..State::new("pill_call", View::Pill, Page::Home) },
+        State { call: Some(&call_voice), media: true, ..State::new("pill_call_music", View::Pill, Page::Home) },
+        State { call: Some(&call), media: true, lyric: Some(lyric), ..State::new("pill_call_lyric", View::LyricPill, Page::Home) },
+        State { call: Some(&call_muted), media: true, lyric: Some(lyric), ..State::new("pill_call_lyric_muted", View::LyricPill, Page::Home) },
+        State { call: Some(&call), media: true, battery: Some((76, false)), ..State::new("home_call_player", View::Panel, Page::Home) },
+        State { call: Some(&call_muted), media: true, hovered: Some(Hit::CallMute), ..State::new("home_call_player_muted", View::Panel, Page::Home) },
+        State { call: Some(&call_locked), media: true, locked: true, ..State::new("home_call_player_locked", View::Panel, Page::Home) },
+        State { call: Some(&call_long), media: true, lyrics_button: Some(true), lyrics: Some(&lyrics), lyric_mix: 1.0, ..State::new("home_call_lyrics", View::PanelWide, Page::Home) },
+        State { call: Some(&call_muted), hovered: Some(Hit::CallMute), ..State::new("pill_call_muted", View::Pill, Page::Home) },
+        State { call: Some(&call_long), theme: Theme::Light, ..State::new("pill_call_long", View::Pill, Page::Home) },
+        State { call: Some(&call), hovered: Some(Hit::CallMute), ..State::new("home_call", View::Panel, Page::Home) },
+        State { call: Some(&call_muted), ..State::new("home_call_muted", View::Panel, Page::Home) },
+        State { call: Some(&call), media: true, calendar: Some(&calendar), ..State::new("home_call_wide", View::PanelWide, Page::Home) },
+        State { call: Some(&call_locked), locked: true, ..State::new("home_call_locked", View::Panel, Page::Home) },
+        State { call: Some(&call), theme: Theme::Glass, ..State::new("home_call_glass", View::Panel, Page::Home) },
+        State { hud: Some(&mic_off), ..State::new("strip_mic", View::Strip, Page::Home) },
+        State { hud: Some(&mic_off), ..State::new("hud_mic", View::Hud, Page::Home) },
+        State { hud: Some(&call_ended), ..State::new("hud_call_ended", View::Hud, Page::Home) },
     ];
     for state in states {
         let mut renderer = Renderer::new(state.dpi, state.theme).unwrap();
@@ -421,6 +461,7 @@ fn preview_states() {
             calendar: state.calendar,
             agenda_draft: state.agenda_draft,
             download: state.download,
+            call: state.call,
             welcome: state.welcome,
         };
         renderer.draw(&scene).unwrap();
@@ -477,8 +518,54 @@ fn scene_for<'a>(data: &'a Sample, view: View, page: Page, media: bool) -> Scene
         calendar: None,
         agenda_draft: None,
         download: None,
+        call: None,
         welcome: false,
     }
+}
+
+/// Tombol bisu panggilan bisa diklik di pil panggilan (di kiri, di tempat mata maskot) dan di
+/// Beranda. Selama lagu diputar, pil musik dan pil lirik tetap memakai sampul dan tidak punya
+/// bagian yang bisa diklik, sama seperti tanpa panggilan.
+#[test]
+fn call_mute_hits() {
+    let data = sample();
+    let call = sample_call(false);
+    let renderer = Renderer::new(96, Theme::Black).unwrap();
+    let play = |renderer: &Renderer| (0..400).any(|x| renderer.hit_at(x as f32 * 2.0, 125.0) == Some(Hit::Media(Button::PlayPause)));
+    for media in [false, true] {
+        let x0 = CANVAS.0 / 2.0 - View::Pill.size().0 / 2.0;
+        let mut scene = scene_for(&data, View::Pill, Page::Home, media);
+        renderer.draw(&scene).unwrap();
+        assert_eq!(renderer.hit_at(x0 + 18.0, 15.0), None);
+        scene.call = Some(&call);
+        renderer.draw(&scene).unwrap();
+        let button = if media { None } else { Some(Hit::CallMute) };
+        assert_eq!(renderer.hit_at(x0 + 18.0, 15.0), button);
+        assert_eq!(renderer.hit_at(x0 + 90.0, 15.0), None);
+    }
+
+    let x0 = CANVAS.0 / 2.0 - View::LyricPill.size().0 / 2.0;
+    let mut scene = scene_for(&data, View::LyricPill, Page::Home, true);
+    scene.lyric = Some("Baris lirik");
+    scene.call = Some(&call);
+    renderer.draw(&scene).unwrap();
+    assert_eq!(renderer.hit_at(x0 + 18.0, 15.0), None);
+
+    // Tanpa pemutar: kartu panggilan dengan tombol bisu besar.
+    let x1 = CANVAS.0 / 2.0 + View::Panel.size().0 / 2.0;
+    let mut scene = scene_for(&data, View::Panel, Page::Home, false);
+    scene.call = Some(&call);
+    renderer.draw(&scene).unwrap();
+    assert_eq!(renderer.hit_at(x1 - MARGIN_FOR_TEST - 40.0, 70.0), Some(Hit::CallMute));
+    assert!(!play(&renderer));
+
+    // Dengan pemutar: pemutar tetap ada, tombol bisu kecil di kepalanya.
+    let mut scene = scene_for(&data, View::Panel, Page::Home, true);
+    scene.call = Some(&call);
+    renderer.draw(&scene).unwrap();
+    assert_eq!(renderer.hit_at(x1 - MARGIN_FOR_TEST - 32.0, 22.0), Some(Hit::CallMute));
+    assert_ne!(renderer.hit_at(x1 - MARGIN_FOR_TEST - 40.0, 70.0), Some(Hit::CallMute));
+    assert!(play(&renderer));
 }
 
 /// Gambar ulang mata saja (berkedip, melirik, ganti ekspresi) harus sama persis dengan gambar
@@ -608,8 +695,9 @@ fn slim_line_keeps_privacy_dot() {
 }
 
 /// Tulis ulang `packaging/notch.ico` dari maskot ikon tray (ikon notch.exe di menu Start,
-/// Explorer, dan Pengaturan > Aplikasi). Jalankan dengan
-/// `cargo test write_app_icon -- --ignored` setelah maskotnya diubah.
+/// Explorer, dan Pengaturan > Aplikasi), beserta logo paket identitas di
+/// `packaging/package/assets` (ikon jendela Pengaturan di taskbar saat pesan masuk aktif).
+/// Jalankan dengan `cargo test write_app_icon -- --ignored` setelah maskotnya diubah.
 #[test]
 #[ignore]
 fn write_app_icon() {
@@ -652,8 +740,26 @@ fn write_app_icon() {
     for image in &images {
         ico.extend(image);
     }
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging").join("notch.ico");
-    std::fs::write(&path, ico).unwrap();
+    let packaging = Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging");
+    std::fs::write(packaging.join("notch.ico"), ico).unwrap();
+
+    // Logo paket: maskot yang sama, jadi terlihat di taskbar terang maupun gelap.
+    let _ = unsafe { windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED) };
+    for (name, size) in [("Square44x44Logo", 44), ("Square150x150Logo", 150), ("StoreLogo", 50)] {
+        let mut surface = icon_surface(size).unwrap();
+        // `save_png` menerima alfa premultiplied seperti hasil Direct2D.
+        let pixels: Vec<u32> = surface
+            .pixels()
+            .iter()
+            .map(|&px| {
+                let a = px >> 24;
+                let pre = |c: u32| (c * a + 127) / 255;
+                (a << 24) | (pre((px >> 16) & 0xFF) << 16) | (pre((px >> 8) & 0xFF) << 8) | pre(px & 0xFF)
+            })
+            .collect();
+        let path = packaging.join("package").join("assets").join(format!("{name}.png"));
+        aset::save_png(&path, &pixels, size, (0, 0, size, size));
+    }
 }
 
 /// Tombol lirik, bar lagu, dan tombol putar bisa diklik di tempat yang terlihat; bar lagu
@@ -704,6 +810,23 @@ fn lyrics_replace_calendar() {
         renderer.draw(&scene).unwrap();
         let hit = renderer.hit_at(day.0, day.1);
         assert_eq!(matches!(hit, Some(Hit::CalendarDay(_))), expected, "geser {mix}: {hit:?}");
+    }
+}
+
+/// Keterangan "Lirik tidak tersedia" bisa diklik untuk mencari lagi; "Mencari lirik…" tidak.
+#[test]
+fn lyrics_status_retry() {
+    let data = sample();
+    let renderer = Renderer::new(96, Theme::Black).unwrap();
+    let x0 = CANVAS.0 / 2.0 - View::PanelWide.size().0 / 2.0;
+    let status = (x0 + MARGIN_FOR_TEST + 300.0 + 24.0 + 60.0, 78.0);
+    for (retry, expected) in [(true, Some(Hit::LyricsRetry)), (false, None)] {
+        let lyrics = LyricsView { lines: Default::default(), scroll: 1.0, status: Some("Lirik tidak tersedia"), retry };
+        let mut scene = scene_for(&data, View::PanelWide, Page::Home, true);
+        scene.lyric_mix = 1.0;
+        scene.lyrics = Some(&lyrics);
+        renderer.draw(&scene).unwrap();
+        assert_eq!(renderer.hit_at(status.0, status.1), expected);
     }
 }
 
@@ -814,4 +937,34 @@ fn write_bmp(path: &Path, w: i32, h: i32, pixels: &[u32]) {
         data.extend_from_slice(&[over(px & 0xFF), over((px >> 8) & 0xFF), over((px >> 16) & 0xFF), 255]);
     }
     std::fs::write(path, data).unwrap();
+}
+
+/// Jendela pengaturan, setiap kategori dalam tema terang dan gelap, ke `target/preview/` sebagai
+/// PNG supaya tampilannya bisa dicek tanpa membuka jendelanya.
+#[test]
+fn settings_window_previews() {
+    use crate::settings_window::{Category, preview};
+    let _ = unsafe { windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED) };
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("preview");
+    std::fs::create_dir_all(&dir).unwrap();
+    let state = crate::tray::MenuState {
+        visible: true,
+        autostart: true,
+        settings: crate::settings::Settings::default(),
+        messages_available: false,
+        messages_denied: false,
+        hotkey_taken: false,
+        can_activate: true,
+        city: Some("Jakarta".into()),
+        call_apps: vec![("Discord".into(), false), ("Zoom Workplace".into(), true), ("WhatsApp".into(), true)],
+    };
+    for (i, category) in Category::ALL.into_iter().enumerate() {
+        for (dark, name) in [(false, "terang"), (true, "gelap")] {
+            let (pixels, w, h) = preview(category, dark, &state, false);
+            aset::save_png(&dir.join(format!("pengaturan-{i}-{name}.png")), &pixels, w, (0, 0, w, h));
+        }
+        // Jendela paling sempit: keterangan panjang harus turun ke baris berikutnya.
+        let (pixels, w, h) = preview(category, false, &state, true);
+        aset::save_png(&dir.join(format!("pengaturan-{i}-sempit.png")), &pixels, w, (0, 0, w, h));
+    }
 }

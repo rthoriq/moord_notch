@@ -6,11 +6,11 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos, HICON, HMENU,
-    MENU_ITEM_FLAGS, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED,
+    MENU_ITEM_FLAGS, MF_CHECKED, MF_DEFAULT, MF_GRAYED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED,
     PostMessageW, SetForegroundWindow, TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
     TPM_RIGHTBUTTON, TRACK_POPUP_MENU_FLAGS, TrackPopupMenu, WM_APP, WM_NULL,
 };
-use windows::core::{HSTRING, PCWSTR, w};
+use windows::core::{HSTRING, PCWSTR};
 
 use crate::settings::{Messages, Settings, Size, Theme};
 use crate::widgets::Page;
@@ -18,38 +18,19 @@ use crate::widgets::Page;
 /// Pesan yang dikirim Windows saat ikon tray diklik.
 pub const WM_TRAY: u32 = WM_APP + 1;
 
-const ID_VISIBLE: usize = 1;
-const ID_AUTOSTART: usize = 2;
-const ID_SOUND: usize = 3;
-const ID_LYRICS: usize = 4;
-const ID_LOCK_KEYS: usize = 5;
-const ID_BRIGHTNESS: usize = 6;
-const ID_HIDE_CONTENT: usize = 7;
-const ID_HOTKEY: usize = 8;
-const ID_EXIT: usize = 9;
-const ID_WIFI: usize = 10;
-const ID_DOWNLOADS: usize = 11;
-const ID_SCREENSHOTS: usize = 12;
-const ID_BROWSER_MESSAGES: usize = 13;
-const ID_MEETING: usize = 14;
-const ID_WEATHER: usize = 15;
-const ID_COMPACT_HUD: usize = 16;
-const ID_CALENDAR: usize = 17;
-const ID_ACTIVATE: usize = 18;
-const ID_LOGS: usize = 19;
-/// Pilihan berurutan mulai dari id ini.
-const ID_MESSAGES: usize = 50;
-const ID_PAGES: usize = 60;
-const ID_SIZE: usize = 70;
-const ID_THEME: usize = 100;
+const ID_SETTINGS: usize = 1;
+const ID_VISIBLE: usize = 2;
+const ID_EXIT: usize = 3;
 /// Menu klik kanan panel.
 const ID_MOVE_LEFT: usize = 1;
 const ID_MOVE_RIGHT: usize = 2;
 const ID_HIDE_PAGE: usize = 3;
 const ID_SHOW_PAGE: usize = 10;
 
+/// Perintah dari jendela pengaturan, menu tray, atau panel; semuanya dijalankan `App::on_command`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
+    OpenSettings,
     ToggleVisible,
     ToggleAutostart,
     ToggleSound,
@@ -63,14 +44,23 @@ pub enum Command {
     ToggleScreenshots,
     ToggleBrowserMessages,
     ToggleMeeting,
+    ToggleCalls,
+    /// Hitung atau abaikan aplikasi ke-n di daftar aplikasi panggilan.
+    ToggleCallApp(usize),
     ToggleWeather,
     ToggleCompactHud,
     ToggleCalendar,
+    /// Pil tetap utuh saat jendela di-maximize.
+    ToggleKeepPill,
     /// Siapkan identitas paket supaya pesan masuk bisa dibaca (lihat `identity`).
     ActivateMessages,
     OpenLogs,
     /// Tampilkan/sembunyikan halaman panel.
     TogglePage(Page),
+    /// Geser halaman ke kiri (`-1`) atau kanan (`1`) di urutan panel.
+    MovePage(Page, i32),
+    /// Buka panel di halaman kontrol dan minta nama kota cuaca.
+    EditCity,
     Messages(Messages),
     Size(Size),
     Theme(Theme),
@@ -94,6 +84,8 @@ pub struct PageMenu {
     pub hidden: Vec<Page>,
 }
 
+/// Keadaan yang ditampilkan jendela pengaturan.
+#[derive(Clone)]
 pub struct MenuState {
     pub visible: bool,
     pub autostart: bool,
@@ -106,6 +98,10 @@ pub struct MenuState {
     pub hotkey_taken: bool,
     /// Notch berjalan dari folder pemasangan, jadi pesan masuk bisa diaktifkan.
     pub can_activate: bool,
+    /// Kota cuaca yang tersimpan.
+    pub city: Option<String>,
+    /// Aplikasi yang pernah memakai mikrofon, dan apakah dihitung sebagai panggilan.
+    pub call_apps: Vec<(String, bool)>,
 }
 
 pub struct Tray {
@@ -154,107 +150,20 @@ fn item(menu: HMENU, flags: MENU_ITEM_FLAGS, id: usize, label: &str) {
     let _ = unsafe { AppendMenuW(menu, MF_STRING | flags, id, &HSTRING::from(label)) };
 }
 
-/// Tampilkan menu dan tunggu pilihan pengguna. Menu menjalankan loop pesannya sendiri,
-/// jadi jangan dipanggil sambil memegang state aplikasi.
-pub fn show_menu(hwnd: HWND, state: MenuState) -> Option<Command> {
-    let s = state.settings;
+/// Menu klik kanan ikon tray: buka pengaturan, tampilkan/sembunyikan notch, atau keluar. Semua
+/// pengaturan lain ada di jendela pengaturan. Menu menjalankan loop pesannya sendiri, jadi jangan
+/// dipanggil sambil memegang state aplikasi.
+pub fn show_menu(hwnd: HWND, visible: bool) -> Option<Command> {
     unsafe {
         let menu = CreatePopupMenu().ok()?;
-        let options = CreatePopupMenu().ok()?;
-        let messages = CreatePopupMenu().ok()?;
-        let themes = CreatePopupMenu().ok()?;
-        let pages = CreatePopupMenu().ok()?;
-        let sizes = CreatePopupMenu().ok()?;
-
-        for (i, mode) in Messages::ALL.iter().enumerate() {
-            let usable = *mode == Messages::Off || state.messages_available;
-            let flags = check(*mode == s.messages) | if usable { MF_UNCHECKED } else { MF_GRAYED };
-            item(messages, flags, ID_MESSAGES + i, mode.label());
-        }
-        if !state.messages_available && state.can_activate {
-            item(messages, MF_UNCHECKED, ID_ACTIVATE, "Aktifkan pesan masuk… (izin Administrator sekali)");
-        } else if !state.messages_available {
-            item(messages, MF_GRAYED, 0, "Pasang notch dulu untuk memakai pesan masuk");
-        } else if state.messages_denied && s.messages != Messages::Off {
-            item(messages, MF_GRAYED, 0, "Izin ditolak: Pengaturan Windows > Privasi > Notifikasi");
-        }
-        let _ = AppendMenuW(messages, MF_SEPARATOR, 0, PCWSTR::null());
-        let browser_usable = state.messages_available && s.messages != Messages::Off;
-        let browser_flags = check(s.browser_messages) | if browser_usable { MF_UNCHECKED } else { MF_GRAYED };
-        item(messages, browser_flags, ID_BROWSER_MESSAGES, "Notifikasi browser (WhatsApp Web, dll.)");
-        item(messages, check(s.hide_content), ID_HIDE_CONTENT, "Sembunyikan isi pesan");
-
-        item(options, check(s.sound), ID_SOUND, "Suara notifikasi");
-        item(options, check(s.lyrics), ID_LYRICS, "Lirik lagu (memakai internet)");
-        item(options, check(s.weather), ID_WEATHER, "Cuaca (memakai internet)");
-        item(options, check(s.meeting), ID_MEETING, "Mode rapat (saat kamera/mikrofon dipakai)");
-        let hotkey = if s.hotkey && state.hotkey_taken {
-            "Pintasan Win+Alt+N (dipakai aplikasi lain)"
-        } else {
-            "Pintasan Win+Alt+N"
-        };
-        item(options, check(s.hotkey), ID_HOTKEY, hotkey);
-        let _ = AppendMenuW(options, MF_SEPARATOR, 0, PCWSTR::null());
-        item(options, check(s.calendar), ID_CALENDAR, "Kalender di Beranda");
-        item(options, check(s.compact_hud), ID_COMPACT_HUD, "Kabar ringkas (gaya Dynamic Island)");
-        item(options, check(s.lock_keys), ID_LOCK_KEYS, "Kabar Caps Lock / Num Lock");
-        item(options, check(s.brightness), ID_BRIGHTNESS, "Kabar kecerahan layar");
-        item(options, check(s.wifi), ID_WIFI, "Kabar Wi-Fi");
-        item(options, check(s.downloads), ID_DOWNLOADS, "Kabar unduhan selesai");
-        item(options, check(s.screenshots), ID_SCREENSHOTS, "Screenshot masuk shelf");
-        // Submenu ikut dihancurkan bersama menu induknya.
-        let _ = AppendMenuW(options, MF_POPUP, messages.0 as usize, w!("Pesan masuk"));
-        let _ = AppendMenuW(options, MF_SEPARATOR, 0, PCWSTR::null());
-        item(options, MF_UNCHECKED, ID_LOGS, "Buka folder log");
-
-        for (i, theme) in Theme::ALL.iter().enumerate() {
-            item(themes, check(*theme == s.theme), ID_THEME + i, theme.label());
-        }
-        for (i, size) in Size::ALL.iter().enumerate() {
-            item(sizes, check(*size == s.size), ID_SIZE + i, size.label());
-        }
-        for page in s.pages.order() {
-            let index = Page::ALL.iter().position(|p| *p == page).unwrap_or(0);
-            let locked = if page == Page::Home { MF_GRAYED } else { MF_UNCHECKED };
-            item(pages, check(s.pages.shown(page)) | locked, ID_PAGES + index, page.label());
-        }
-        let _ = AppendMenuW(pages, MF_SEPARATOR, 0, PCWSTR::null());
-        item(pages, MF_GRAYED, 0, "Urutan: klik kanan panel");
-
-        item(menu, check(state.visible), ID_VISIBLE, "Tampilkan notch");
-        item(menu, check(state.autostart), ID_AUTOSTART, "Mulai bersama Windows");
-        let _ = AppendMenuW(menu, MF_POPUP, options.0 as usize, w!("Pengaturan"));
-        let _ = AppendMenuW(menu, MF_POPUP, pages.0 as usize, w!("Halaman"));
-        let _ = AppendMenuW(menu, MF_POPUP, sizes.0 as usize, w!("Ukuran"));
-        let _ = AppendMenuW(menu, MF_POPUP, themes.0 as usize, w!("Tema"));
+        item(menu, MF_DEFAULT, ID_SETTINGS, "Pengaturan…");
+        item(menu, check(visible), ID_VISIBLE, "Tampilkan notch");
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(menu, MF_UNCHECKED, ID_EXIT, "Keluar");
-
-        let chosen = track(hwnd, menu, TPM_BOTTOMALIGN);
-        match chosen {
+        match track(hwnd, menu, TPM_BOTTOMALIGN) {
+            ID_SETTINGS => Some(Command::OpenSettings),
             ID_VISIBLE => Some(Command::ToggleVisible),
-            ID_AUTOSTART => Some(Command::ToggleAutostart),
-            ID_SOUND => Some(Command::ToggleSound),
-            ID_LYRICS => Some(Command::ToggleLyrics),
-            ID_LOCK_KEYS => Some(Command::ToggleLockKeys),
-            ID_BRIGHTNESS => Some(Command::ToggleBrightness),
-            ID_HIDE_CONTENT => Some(Command::ToggleHideContent),
-            ID_HOTKEY => Some(Command::ToggleHotkey),
-            ID_WIFI => Some(Command::ToggleWifi),
-            ID_DOWNLOADS => Some(Command::ToggleDownloads),
-            ID_SCREENSHOTS => Some(Command::ToggleScreenshots),
-            ID_BROWSER_MESSAGES => Some(Command::ToggleBrowserMessages),
-            ID_MEETING => Some(Command::ToggleMeeting),
-            ID_WEATHER => Some(Command::ToggleWeather),
-            ID_COMPACT_HUD => Some(Command::ToggleCompactHud),
-            ID_CALENDAR => Some(Command::ToggleCalendar),
-            ID_ACTIVATE => Some(Command::ActivateMessages),
-            ID_LOGS => Some(Command::OpenLogs),
             ID_EXIT => Some(Command::Exit),
-            id if id >= ID_THEME => Theme::ALL.get(id - ID_THEME).map(|t| Command::Theme(*t)),
-            id if id >= ID_SIZE => Size::ALL.get(id - ID_SIZE).map(|s| Command::Size(*s)),
-            id if id >= ID_PAGES => Page::ALL.get(id - ID_PAGES).map(|p| Command::TogglePage(*p)),
-            id if id >= ID_MESSAGES => Messages::ALL.get(id - ID_MESSAGES).map(|m| Command::Messages(*m)),
             _ => None,
         }
     }

@@ -57,6 +57,7 @@ mod privacy;
 mod render;
 mod services;
 mod settings;
+mod settings_window;
 mod share;
 mod sound;
 mod store;
@@ -125,6 +126,8 @@ fn main() -> Result<()> {
         // supaya mutex tetap hidup sampai proses selesai.
         let _mutex = CreateMutexW(None, true, w!("Local\\NotchWindows.SingleInstance"))?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
+            // Dibuka lagi (misal dari menu Start) saat sudah berjalan: tampilkan pengaturannya.
+            install::show_settings_of_running();
             return Ok(());
         }
     }

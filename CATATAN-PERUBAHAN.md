@@ -251,3 +251,111 @@ Mengikuti aplikasi notch populer di Mac (Boring Notch, NotchDrop, NotchNook):
 - Saat jendela aktif di-maximize, notch tetap menciut jadi garis tipis walau kamera atau mikrofon
   sedang dipakai. Titik privasinya (hijau = kamera, oranye = mikrofon) tetap tampil di ujung kanan
   garis, jadi ruang tab tetap lega tanpa kehilangan tanda privasi.
+- Mata tersenyum "^ ^" sedikit lebih renggang, jadi kedua lengkungnya tidak lagi menyatu seperti
+  huruf "m" (terutama terlihat di halaman jam).
+- Paket aset video: `cargo test aset_video -- --ignored` merender semua tampilan notch sebagai PNG
+  transparan 4× dan animasinya sebagai urutan frame 60 fps ke folder `aset-video`.
+- Video promosi Story Instagram: `cargo test --release video_promosi -- --ignored` merender
+  `aset-video/NotchWindows-story.mp4` (1080×1920, 30 fps, 28 detik) langsung dari renderer
+  notch; `video_cuplikan` menyimpan satu frame per adegan untuk dicek dulu. Musik dan efek
+  suaranya disintesis dari kode (120 BPM, bebas hak cipta, -14 LUFS) dan jatuh tepat di potongan
+  adegan; `video_musik` merender musiknya saja sebagai WAV beserta gambar spektrogramnya.
+- Video Reels lengkap (±3 menit): `cargo test --release reels_video -- --ignored` merender
+  `aset-video/NotchWindows-reels.mp4` berisi semua fitur dalam 10 topik, masing-masing dengan
+  animasinya sendiri dan nama topik singkat sebagai transisi. Per topik: `BAB=3 cargo test
+  --release reels_bab -- --ignored`; cuplikan frame: `reels_cuplikan`.
+- Musik Reels dari lagu bebas royalti di `aset-video/lagu.mp3` (tidak ikut git): tempo, awal
+  birama, dan kuncinya dibaca otomatis (`reels_lagu` menggambar hasilnya), setiap adegan
+  dibulatkan ke ketukan lagu, pergantian topik jatuh di garis birama, efek suara bernada digeser
+  ke kunci lagu, dan lagu yang lebih pendek dari video diperpanjang dengan mengulang satu frasa
+  8 birama. Tanpa file itu, musik sintesis yang dipakai. Lagu yang dipakai: "Julia" oleh
+  grand_project (Pixabay).
+
+## Tahap 11: jendela Pengaturan
+
+Semua pengaturan pindah dari menu tray ke jendela **Pengaturan** bergaya Windows 11: latar Mica,
+terang atau gelap mengikuti Windows, warna aksen Windows, dan tajam di semua skala layar.
+
+- **Kategori di kiri**: Umum (tampilkan notch, mulai bersama Windows, suara, keluar), Tampilan
+  (enam tema dengan contoh notch, tiga ukuran, kalender di Beranda, kabar ringkas), Halaman
+  (tampilkan/sembunyikan dan urutan ↑↓), Kabar, Pesan masuk (status izin dan tombol Aktifkan),
+  Privasi & internet (mode rapat, lirik, cuaca, ganti kota), Pintasan, dan Tentang (versi, GitHub,
+  folder data dan log).
+- **Cara membuka**: klik ikon tray; buka NotchWindows lagi dari menu Start saat notch sudah
+  berjalan; atau klik "Pengaturan" di kepala halaman Kontrol cepat.
+- **Langsung berlaku** tanpa tombol Simpan. Perubahan dari tempat lain (klik kanan panel, kota
+  cuaca, izin pesan) langsung terlihat di jendela yang sedang terbuka.
+- **Keyboard**: Tab/Shift+Tab berpindah kontrol, Spasi/Enter memilih, panah atas/bawah berpindah
+  kategori, Page Up/Down menggulir, Esc menutup.
+- **Menu tray** tinggal "Pengaturan…", "Tampilkan notch", dan "Keluar" (klik kanan).
+- Keterangan yang panjang turun ke baris berikutnya, dan daftar kategori menyempit saat jendelanya
+  sempit.
+- `cargo test settings_window_previews` menggambar setiap kategori (terang, gelap, dan jendela
+  tersempit) ke `target/preview/pengaturan-*.png`.
+- **Ikon taskbar**: jendela Pengaturan sempat tampil tanpa ikon di taskbar saat pesan masuk aktif.
+  Windows mengambil ikonnya dari logo paket identitas di folder pemasangan, padahal logo itu tidak
+  ada di sana dan warnanya hitam. Sekarang notch melengkapi logo itu sendiri saat dijalankan, logo
+  paket dibuat dari maskot yang sama dengan ikon notch.exe, dan jendela Pengaturan memakai ikon
+  notch.exe di taskbar (tanpa pelat warna aksen di sudutnya).
+
+## Tahap 12: panggilan aktif
+
+Saat aplikasi apa pun memakai mikrofon lebih dari 3 detik (Zoom, Teams, Discord, WhatsApp,
+Google Meet di browser, dan lainnya), notch menganggapnya sedang dalam panggilan.
+
+- **Pil panggilan**: kiri ikon mikrofon (hijau, atau merah dan dicoret saat bisu), tengah jam,
+  kanan lama panggilan berwarna hijau. Titik hijau kecil muncul kalau kamera ikut menyala. Pil
+  panggilan didahulukan daripada timer dan pomodoro.
+- **Musik tetap jalan**: kalau ada lagu yang diputar selama panggilan, pil musik atau pil lirik
+  tampil seperti biasa, lengkap dengan sampul lagunya. Panggilan cukup ditandai titik di ujung
+  kanan: oranye saat mikrofon menyala, merah saat dibisukan, hijau saat kamera menyala. Lama
+  panggilan dan tombol bisunya ada di panel. Saat lagu dijeda, pil panggilan yang penuh muncul
+  lagi.
+- **Bisu sekali klik**: klik ikon mikrofon di pil untuk membisukan atau menyalakan mikrofon yang
+  benar-benar dipakai aplikasi panggilan (bukan sekadar mikrofon default). Panel tidak membuka
+  selama kursor ada di ikon itu; klik bagian pil lainnya tetap membuka panel.
+- **Kartu panggilan di Beranda** menggantikan jam: nama aplikasi, lama panggilan, status
+  mikrofon dan kamera, serta tombol Bisukan/Nyalakan yang besar. Kalau ada pemutar musik
+  (diputar atau dijeda), pemutar dan kolom liriknya tetap tampil, dan panggilannya pindah ke
+  kepala pemutar: titik hijau, "Discord · 12:34", dan tombol bisu kecil di samping gelombang
+  musik. Dengan begitu lagu tetap bisa diputar atau dijeda dari panel. Di lock screen, nama
+  aplikasinya disembunyikan.
+- **Win+Alt+S** membisukan atau menyalakan mikrofon dari mana saja, disertai kabar singkat
+  "Mikrofon dibisukan" atau "Mikrofon menyala" (tetap muncul saat senyap). Tanpa panggilan,
+  pintasan ini memakai mikrofon default. Pintasan ini ikut sakelar Pintasan bersama Win+Alt+N.
+  Awalnya direncanakan Win+Alt+M, tetapi tombol itu sudah dipakai Xbox Game Bar, dan Win+Alt+K
+  dipakai Windows sendiri.
+- **Kabar selesai**: "Panggilan selesai · 42 menit" setelah mikrofon dilepas lebih dari 5 detik.
+  Kalau aplikasi memakai mikrofon lagi dalam 5 detik itu, panggilannya dianggap masih sama.
+- **Aplikasi perantara diabaikan**: NVIDIA Broadcast, RTX Voice, Voicemeeter, Elgato Wave Link,
+  Krisp, serta Voice Access dan Live Captions bawaan Windows selalu memegang mikrofon, jadi tidak
+  dihitung sebagai panggilan.
+- **Abaikan aplikasi tertentu**: Pengaturan → Kabar menampilkan aplikasi yang pernah memakai
+  mikrofon (paling banyak 12, disimpan di `panggilan.txt`). Matikan sakelarnya, misal untuk
+  Discord yang dibiarkan di voice channel sambil main game, maka pil panggilan tidak muncul
+  untuk aplikasi itu. Kalau dimatikan di tengah panggilan, pilnya langsung hilang tanpa kabar
+  selesai.
+- **Sakelar** "Panggilan aktif" di Pengaturan → Kabar, menyala secara default. Mode rapat tidak
+  berubah.
+- `cargo test preview_states` menggambar pil, kartu Beranda, dan kabarnya ke `target/preview/`
+  (`pill_call*`, `home_call*`, `hud_mic`, `hud_call_ended`).
+
+## Perbaikan setelah Tahap 12
+
+- **Lirik Spotify lebih andal**: saat lagu berganti, Spotify mengirim judul baru lebih dulu dan
+  durasinya sesaat kemudian. Notch dulu langsung mencari lirik dengan durasi lagu sebelumnya,
+  sehingga pencocokan persis di LRCLIB meleset dan pencarian cadangan dipakai. Sekarang notch
+  menunggu 1 detik sesudah lagu berganti, jadi durasinya sudah benar.
+- **Gangguan server bukan berarti lirik tidak ada**: kalau server lirik error (misal pencarian
+  LRCLIB membalas 503, terlalu banyak permintaan, atau internet putus), kolom lirik menampilkan
+  "Server lirik sibuk, mencoba lagi…". Notch mencoba lagi otomatis setelah 30 detik, 2 menit,
+  lalu 5 menit selama lagunya masih sama. "Lirik tidak tersedia" hanya muncul kalau liriknya
+  memang tidak ditemukan.
+- **Klik untuk mencoba lagi**: keterangan "Lirik tidak tersedia" atau "Server lirik sibuk" di
+  kolom lirik bisa diklik untuk langsung mencari liriknya lagi.
+- **Jam pil panggilan di tengah**: jam di pil panggilan dulu bergeser ke kiri karena memberi
+  ruang untuk lama panggilan. Sekarang jamnya tepat di tengah, sama seperti pil biasa.
+- **Tetap tampil saat jendela penuh**: sakelar baru di Pengaturan → Tampilan. Kalau dinyalakan,
+  notch tidak mengecil jadi garis tipis saat jendela di-maximize, jadi jam, musik, lirik, dan
+  panggilan tetap terlihat. Bawaannya mati. Full-screen sungguhan (video, game, presentasi)
+  tetap menyembunyikan notch.

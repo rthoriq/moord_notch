@@ -17,12 +17,17 @@ shelf file, kalender, dan widget kecil, di tengah atas layar. Ringan, berjalan l
   pil untuk pindah lagu.
 - **Kabar singkat**: volume, kecerahan, charger dan baterai lemah, Bluetooth, Wi-Fi, Caps/Num Lock,
   unduhan selesai, screenshot baru, kamera/mikrofon mulai dipakai, dan pesan masuk (opsional).
+- **Panggilan aktif**: selama Zoom, Teams, Discord, WhatsApp, atau aplikasi lain memakai mikrofon,
+  pil menampilkan lama panggilan dan tombol bisu. Kalau ada lagu yang diputar, pil musik dan
+  liriknya tetap tampil, dan panggilan cukup ditandai titik warna.
+  Win+Alt+S membisukan atau menyalakan mikrofon dari mana saja, dan aplikasi yang bukan panggilan
+  bisa diabaikan di Pengaturan → Kabar.
 - **Halaman panel**: Beranda (jam atau musik, plus kalender dan agenda), Kontrol cepat (volume,
   kecerahan, mikrofon, senyap), Shelf (seret file ke notch, atau ke zona Bagikan), Pomodoro, Timer,
   Minum air, Tugas, dan Sistem (CPU, GPU, RAM, disk, jaringan).
 - **Tampilan**: animasi pegas, maskot yang melirik dan berekspresi, enam tema (termasuk Kaca dan
-  Terang), tiga ukuran, menciut saat jendela di-maximize, sembunyi saat full-screen, dan tetap
-  tampil di lock screen dengan isi terbatas.
+  Terang), tiga ukuran, menciut saat jendela di-maximize (bisa dimatikan di Pengaturan →
+  Tampilan), sembunyi saat full-screen, dan tetap tampil di lock screen dengan isi terbatas.
 
 Rincian tiap fitur ada di [catatan perubahan](CATATAN-PERUBAHAN.md).
 
@@ -39,15 +44,17 @@ Windows 11.
    Administrator, muncul di menu Start, dan berjalan bersama Windows. Pilih **Tidak** untuk
    mencobanya sekali tanpa memasang.
 
-Semua pengaturan ada di ikon maskot di system tray. **Perbarui**: unduh versi baru, buka, pilih Ya.
+Semua pengaturan ada di jendela **Pengaturan**: klik ikon maskot di system tray, buka NotchWindows
+lagi dari menu Start, atau klik "Pengaturan" di halaman Kontrol cepat. Perubahan langsung berlaku.
+**Perbarui**: unduh versi baru, buka, pilih Ya.
 **Cabut**: Pengaturan Windows → Aplikasi → NotchWindows → Uninstall; notch menanyakan apakah datamu
 (pengaturan, tugas, agenda) ikut dihapus.
 
 ### Pesan masuk (opsional)
 
 Windows hanya mengizinkan aplikasi yang punya *identitas paket* membaca notifikasi. Untuk
-menampilkan pesan WhatsApp, Telegram, dan aplikasi chat lain di notch, pilih menu tray →
-Pengaturan → Pesan masuk → **Aktifkan pesan masuk…**, lalu setujui izin Administrator sekali.
+menampilkan pesan WhatsApp, Telegram, dan aplikasi chat lain di notch, buka Pengaturan → Pesan
+masuk → **Aktifkan**, lalu setujui izin Administrator sekali.
 Notch lalu:
 
 1. membuat paket kecil berisi nama dan logo notch saja (tanpa program),
@@ -73,7 +80,9 @@ Saat notch dicabut, paket dan sertifikat ini ikut dibuang.
 - Pesan masuk dibaca dari notifikasi Windows di komputermu sendiri; tidak disimpan dan tidak dikirim
   ke mana pun. "Sembunyikan isi pesan" dan mode rapat menyembunyikan isinya.
 - Kamera dan mikrofon tidak pernah dinyalakan; notch hanya melihat aplikasi mana yang sedang
-  memakainya. Dari keyboard, notch hanya memperhatikan Caps Lock dan Num Lock.
+  memakainya. Tombol bisu panggilan hanya mengubah status bisu mikrofon itu, tanpa mendengarkan
+  suaranya. Nama aplikasi yang pernah memakai mikrofon disimpan di `panggilan.txt` untuk daftar
+  di Pengaturan → Kabar. Dari keyboard, notch hanya memperhatikan Caps Lock dan Num Lock.
 - Log error (`log.txt` di folder data) hanya berisi jenis kegagalan, tanpa isi pesan, judul lagu,
   atau nama file.
 
@@ -129,7 +138,7 @@ Untuk pengembang:
 | `src/app.rs` | Jendela, input mouse/keyboard, timer, loop pesan, perpindahan bentuk dan halaman |
 | `src/render/mod.rs` | Gambar notch dengan Direct2D (software) ke layered window, alat gambar dasar, ikon |
 | `src/render/pages.rs` | Tata letak pil, HUD, sambutan, dan tiap halaman panel; area klik didaftarkan sambil menggambar |
-| `src/widgets/` | Data dan aturan shelf, pomodoro, timer, minum air, tugas, agenda kalender, serta urutan halaman |
+| `src/widgets/` | Data dan aturan shelf, pomodoro, timer, minum air, tugas, agenda kalender, panggilan, serta urutan halaman |
 | `src/install.rs` | Pasang, perbarui, dan cabut tanpa Administrator; catatan di Pengaturan > Aplikasi |
 | `src/identity.rs` | Paket identitas untuk pesan masuk: dibuat, ditandatangani, dipercaya, didaftarkan |
 | `src/log.rs` | Log error lokal |
@@ -154,8 +163,9 @@ Untuk pengembang:
 | `src/sysinfo.rs` | CPU, GPU (beban dan suhu), RAM, disk, dan jaringan |
 | `src/folders.rs` | Pantau folder Screenshots dan Downloads untuk file baru yang selesai ditulis |
 | `src/network.rs` | Status Wi-Fi tersambung/terputus |
-| `src/settings.rs` | Pengaturan yang diubah lewat menu tray |
-| `src/tray.rs` | Ikon dan menu tray |
+| `src/settings.rs` | Pengaturan yang tersimpan di `settings.txt` |
+| `src/settings_window.rs` | Jendela Pengaturan (Direct2D, latar Mica, terang/gelap mengikuti Windows) |
+| `src/tray.rs` | Ikon tray dan menu singkatnya |
 | `src/autostart.rs` | "Mulai bersama Windows" lewat kunci `Run` milik pengguna (tanpa admin) |
 | `src/clock.rs` | Jam, tanggal, durasi, dan lama menyala berbahasa Indonesia |
 | `build.rs`, `packaging/` | Manifest exe, ikon, manifest paket identitas, dan skrip pembaruan untuk pengembang |
@@ -179,17 +189,19 @@ NotchNook). Lirik dari [LRCLIB](https://lrclib.net), cuaca dari [Open-Meteo](htt
 NotchWindows puts a MacBook-style notch at the top center of your Windows screen: a music player
 with synced lyrics (also for YouTube and YouTube Music in the browser), Dynamic Island-style
 notifications (volume, brightness, battery, Bluetooth, Wi-Fi, downloads, camera/mic in use,
-optional chat messages), a file shelf with a Share zone, a calendar with your own agenda, and small
-widgets (quick controls, pomodoro, timer, water reminder, tasks, system monitor). The interface is
-in Indonesian.
+optional chat messages), an active-call pill with one-click mute (Win+Alt+S), a file shelf with a
+Share zone, a calendar with your own agenda, and small widgets (quick controls, pomodoro, timer,
+water reminder, tasks, system monitor). The interface is in Indonesian.
 
 - **Install**: download `notch.exe` from [Releases](../../releases), open it (if SmartScreen warns,
   choose *More info → Run anyway*), and choose *Ya* (Yes). No administrator rights are needed;
   uninstall from Windows Settings → Apps.
 - **Privacy**: no account and no telemetry. Data stays in `%APPDATA%\NotchWindows`. Only two
   features use the internet and both are off by default: lyrics (LRCLIB) and weather (Open-Meteo).
-- **Chat messages** (optional): Windows only lets packaged apps read notifications, so the tray menu
-  offers a one-time administrator step. Notch creates a small identity package containing no
+- **Settings**: click the tray icon (or open NotchWindows again from Start) for the Settings window,
+  which follows Windows light/dark mode.
+- **Chat messages** (optional): Windows only lets packaged apps read notifications, so Settings →
+  Pesan masuk offers a one-time administrator step. Notch creates a small identity package containing no
   program, signs it with a new local certificate, deletes the signing key immediately, and trusts
   the certificate so Windows accepts the package.
 - **Verify a release**: `gh attestation verify notch.exe -R rthoriq/moord_notch`.

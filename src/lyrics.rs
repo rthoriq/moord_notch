@@ -35,6 +35,18 @@ const NOISE: [&str; 27] = [
 const STRONG_NOISE: usize = 23;
 /// Baris ditampilkan sedikit lebih awal supaya terasa pas dengan suara.
 const LEAD_SECS: f64 = 0.15;
+/// Jeda sesudah lagu berganti sebelum liriknya dicari. Spotify mengirim judul baru lebih dulu
+/// dan durasinya sesaat kemudian; dengan durasi lagu sebelumnya, pencocokan persis meleset.
+pub const WAIT_MS: u32 = 1_000;
+/// Jeda sebelum mencoba lagi sesudah server lirik error (misal 503, 429, atau internet putus):
+/// 30 detik, 2 menit, lalu 5 menit.
+const RETRY_SECS: [u32; 3] = [30, 120, 300];
+
+/// Jeda (ms) sebelum percobaan berikutnya sesudah `failures` kali gagal berturut-turut; `None`
+/// kalau sudah menyerah.
+pub fn retry_delay_ms(failures: u32) -> Option<u32> {
+    RETRY_SECS.get(failures.checked_sub(1)? as usize).map(|secs| secs * 1000)
+}
 
 pub struct Line {
     pub at: f64,
@@ -45,6 +57,8 @@ pub struct Line {
 pub struct Lyrics {
     pub key: String,
     pub lines: Vec<Line>,
+    /// Gagal karena server lirik atau internet, bukan karena liriknya tidak ada; layak dicoba lagi.
+    pub failed: bool,
 }
 
 impl Lyrics {
@@ -76,15 +90,15 @@ pub fn key(title: &str, artist: &str) -> String {
 /// Ambil lirik di thread terpisah; hasilnya datang sebagai [`Event::Lyrics`].
 pub fn spawn(request: Request, notify: Notifier) {
     let spawned = thread::Builder::new().name("lirik".into()).spawn(move || {
-        let lines = match fetch(&request) {
-            Ok(Some(lrc)) => parse(&lrc),
-            Ok(None) => Vec::new(),
+        let (lines, failed) = match fetch(&request) {
+            Ok(Some(lrc)) => (parse(&lrc), false),
+            Ok(None) => (Vec::new(), false),
             Err(e) => {
                 error_log!("lirik gagal diambil: {e}");
-                Vec::new()
+                (Vec::new(), true)
             }
         };
-        notify.send(Event::Lyrics(Lyrics { key: request.key, lines }));
+        notify.send(Event::Lyrics(Lyrics { key: request.key, lines, failed }));
     });
     if let Err(e) = spawned {
         error_log!("thread lirik gagal dibuat: {e}");
@@ -357,6 +371,7 @@ mod tests {
         let lyrics = Lyrics {
             key: String::new(),
             lines: parse("[ar:Penyanyi]\n[00:12.50]Baris satu\n[00:20.00][01:05.00]Reff\n[00:30.10]\n"),
+            failed: false,
         };
         let times: Vec<f64> = lyrics.lines.iter().map(|l| l.at).collect();
         assert_eq!(times, vec![12.5, 20.0, 30.1, 65.0]);
@@ -420,6 +435,15 @@ mod tests {
             let lrc = fetch(&request).expect("LRCLIB bisa dihubungi");
             assert!(lrc.is_some_and(|lrc| parse(&lrc).len() > 10), "lirik {title} tidak ketemu");
         }
+    }
+
+    #[test]
+    fn retries_slower_then_gives_up() {
+        assert_eq!(retry_delay_ms(0), None);
+        assert_eq!(retry_delay_ms(1), Some(30_000));
+        assert_eq!(retry_delay_ms(2), Some(120_000));
+        assert_eq!(retry_delay_ms(3), Some(300_000));
+        assert_eq!(retry_delay_ms(4), None);
     }
 
     #[test]

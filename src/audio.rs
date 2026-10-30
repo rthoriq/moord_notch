@@ -1,6 +1,7 @@
 //! Volume speaker dan bisu mikrofon: dengarkan perubahannya di perangkat default, pindah
 //! otomatis saat perangkat default berganti (misal headset Bluetooth tersambung), dan ubah
-//! keduanya dari halaman kontrol cepat.
+//! keduanya dari halaman kontrol cepat. Selama panggilan, mikrofon yang dipakai aplikasi
+//! panggilannya (bisa bukan mikrofon default) ikut dipantau untuk tombol bisu panggilan.
 
 use std::sync::Mutex;
 use std::sync::mpsc::Sender;
@@ -15,7 +16,7 @@ use windows::Win32::Media::Audio::{
     eRender,
 };
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
-use windows::core::{PCWSTR, Result, implement};
+use windows::core::{HSTRING, PCWSTR, Result, implement};
 
 use crate::services::{Event, Notifier, Task};
 
@@ -27,6 +28,11 @@ pub struct Monitor {
     endpoint: Option<Endpoint>,
     /// Mikrofon default, untuk tombol bisu.
     mic: Option<Endpoint>,
+    /// Mikrofon yang dipakai aplikasi panggilan (id perangkat dari `privacy`).
+    call: Vec<(String, Endpoint)>,
+    /// Bisu mikrofon panggilan yang terakhir dikabarkan.
+    call_muted: Option<bool>,
+    tasks: Sender<Task>,
     notify: Notifier,
 }
 
@@ -34,9 +40,10 @@ impl Monitor {
     pub fn new(tasks: Sender<Task>, notify: Notifier) -> Result<Self> {
         unsafe {
             let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-            let client: IMMNotificationClient = DeviceClient { tasks }.into();
+            let client: IMMNotificationClient = DeviceClient { tasks: tasks.clone() }.into();
             enumerator.RegisterEndpointNotificationCallback(&client)?;
-            let mut monitor = Self { enumerator, client, endpoint: None, mic: None, notify };
+            let mut monitor =
+                Self { enumerator, client, endpoint: None, mic: None, call: Vec::new(), call_muted: None, tasks, notify };
             monitor.attach_default();
             Ok(monitor)
         }
@@ -85,8 +92,60 @@ impl Monitor {
         }
     }
 
+    /// Pantau mikrofon yang sedang dipakai aplikasi panggilan (kosong = tidak ada panggilan).
+    pub fn watch_call(&mut self, ids: &[String]) {
+        if self.call.iter().map(|(id, _)| id).eq(ids) {
+            return;
+        }
+        self.detach_call();
+        for id in ids {
+            match attach_call(&self.enumerator, id, &self.tasks) {
+                Ok(endpoint) => self.call.push((id.clone(), endpoint)),
+                Err(e) => debug_log!("mikrofon panggilan tidak bisa dipantau: {e}"),
+            }
+        }
+        self.report_call();
+    }
+
+    /// Kabarkan bisu mikrofon panggilan kalau berubah: bisu kalau semuanya dibisukan, `None`
+    /// kalau tidak ada panggilan.
+    pub fn report_call(&mut self) {
+        let muted = (!self.call.is_empty())
+            .then(|| self.call.iter().all(|(_, (volume, _))| unsafe { volume.GetMute() }.is_ok_and(|m| m.as_bool())));
+        if muted != self.call_muted {
+            self.call_muted = muted;
+            self.notify.send(Event::CallMic(muted));
+        }
+    }
+
+    /// Bisukan mikrofon panggilan, atau nyalakan lagi kalau semuanya sudah bisu. Tanpa panggilan,
+    /// mikrofon default yang diubah. Mengembalikan keadaan barunya (true = bisu).
+    pub fn toggle_call_mic(&self) -> Option<bool> {
+        let volumes: Vec<&IAudioEndpointVolume> = if self.call.is_empty() {
+            self.mic.iter().map(|(volume, _)| volume).collect()
+        } else {
+            self.call.iter().map(|(_, (volume, _))| volume).collect()
+        };
+        if volumes.is_empty() {
+            return None;
+        }
+        unsafe {
+            let muted = !volumes.iter().all(|volume| volume.GetMute().is_ok_and(|m| m.as_bool()));
+            for volume in volumes {
+                let _ = volume.SetMute(muted, std::ptr::null());
+            }
+            Some(muted)
+        }
+    }
+
     fn detach(&mut self) {
         for (volume, callback) in [self.endpoint.take(), self.mic.take()].into_iter().flatten() {
+            let _ = unsafe { volume.UnregisterControlChangeNotify(&callback) };
+        }
+    }
+
+    fn detach_call(&mut self) {
+        for (_, (volume, callback)) in self.call.drain(..) {
             let _ = unsafe { volume.UnregisterControlChangeNotify(&callback) };
         }
     }
@@ -95,6 +154,7 @@ impl Monitor {
 impl Drop for Monitor {
     fn drop(&mut self) {
         self.detach();
+        self.detach_call();
         let _ = unsafe { self.enumerator.UnregisterEndpointNotificationCallback(&self.client) };
     }
 }
@@ -121,6 +181,18 @@ fn attach_mic(enumerator: &IMMDeviceEnumerator, notify: &Notifier) -> Result<End
         let muted = volume.GetMute()?.as_bool();
         notify.send(Event::Mic(Some(muted)));
         let callback: IAudioEndpointVolumeCallback = MicCallback { notify: notify.clone(), last: Mutex::new(muted) }.into();
+        volume.RegisterControlChangeNotify(&callback)?;
+        Ok((volume, callback))
+    }
+}
+
+/// Mikrofon dengan id `id`; perubahan bisunya diminta dibaca ulang lewat [`Task::CallMicChanged`].
+fn attach_call(enumerator: &IMMDeviceEnumerator, id: &str, tasks: &Sender<Task>) -> Result<Endpoint> {
+    unsafe {
+        let device = enumerator.GetDevice(&HSTRING::from(id))?;
+        let volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None)?;
+        let muted = volume.GetMute()?.as_bool();
+        let callback: IAudioEndpointVolumeCallback = CallCallback { tasks: tasks.clone(), last: Mutex::new(muted) }.into();
         volume.RegisterControlChangeNotify(&callback)?;
         Ok((volume, callback))
     }
@@ -165,6 +237,28 @@ impl IAudioEndpointVolumeCallback_Impl for MicCallback_Impl {
         if *last != muted {
             *last = muted;
             self.notify.send(Event::Mic(Some(muted)));
+        }
+        Ok(())
+    }
+}
+
+/// Mikrofon panggilan dibisukan atau dinyalakan (misal dari Zoom): bisu semua mikrofon
+/// panggilannya dibaca ulang di thread layanan. Volume rekam yang diatur otomatis oleh aplikasi
+/// panggilan diabaikan.
+#[implement(IAudioEndpointVolumeCallback)]
+struct CallCallback {
+    tasks: Sender<Task>,
+    last: Mutex<bool>,
+}
+
+impl IAudioEndpointVolumeCallback_Impl for CallCallback_Impl {
+    fn OnNotify(&self, data: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> Result<()> {
+        let Some(data) = (unsafe { data.as_ref() }) else { return Ok(()) };
+        let muted = data.bMuted.as_bool();
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if *last != muted {
+            *last = muted;
+            let _ = self.tasks.send(Task::CallMicChanged);
         }
         Ok(())
     }

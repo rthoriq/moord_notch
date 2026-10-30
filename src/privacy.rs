@@ -13,14 +13,14 @@ use windows::Win32::Media::Audio::{
     AudioSessionDisconnectReason, AudioSessionState, AudioSessionStateActive, DEVICE_STATE_ACTIVE,
     IAudioSessionControl, IAudioSessionControl2, IAudioSessionEvents, IAudioSessionEvents_Impl,
     IAudioSessionManager2, IAudioSessionNotification, IAudioSessionNotification_Impl,
-    IMMDeviceEnumerator, MMDeviceEnumerator, eCapture,
+    IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture,
 };
 use windows::Win32::Media::MediaFoundation::{
     IMFSensorActivitiesReport, IMFSensorActivitiesReportCallback,
     IMFSensorActivitiesReportCallback_Impl, IMFSensorActivityMonitor, MF_VERSION,
     MFCreateSensorActivityMonitor, MFStartup,
 };
-use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
+use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
@@ -37,6 +37,8 @@ const MF_LITE: u32 = 1;
 pub struct Usage {
     pub camera: Vec<String>,
     pub microphone: Vec<String>,
+    /// Pemakai mikrofon selain perantara mikrofon (lihat [`is_mediator`]), untuk panggilan aktif.
+    pub callers: Vec<String>,
 }
 
 impl Usage {
@@ -54,6 +56,8 @@ pub struct Monitor {
     /// Dipertahankan supaya laporan kamera terus datang.
     camera: Option<IMFSensorActivityMonitor>,
     camera_apps: Arc<Mutex<Vec<String>>>,
+    /// Id perangkat mikrofon yang dipakai `callers`, untuk tombol bisu panggilan.
+    call_devices: Vec<String>,
     notify: Notifier,
     last: Option<Usage>,
 }
@@ -73,6 +77,7 @@ impl Monitor {
             watcher,
             camera,
             camera_apps,
+            call_devices: Vec::new(),
             notify,
             last: None,
         };
@@ -84,26 +89,42 @@ impl Monitor {
     /// kalau daftar aplikasinya berubah.
     pub fn rescan(&mut self) {
         self.detach();
-        let microphone = self.attach().unwrap_or_else(|e| {
+        let recorders = self.attach().unwrap_or_else(|e| {
             debug_log!("sesi mikrofon tidak terbaca: {e}");
             Vec::new()
         });
+        let sorted = |mut items: Vec<String>| {
+            items.sort();
+            items.dedup();
+            items
+        };
+        let callers = recorders.iter().filter(|r| !r.mediator);
+        let microphone = sorted(recorders.iter().map(|r| r.app.clone()).collect());
+        self.call_devices = sorted(callers.clone().map(|r| r.device.clone()).collect());
+        let callers = sorted(callers.map(|r| r.app.clone()).collect());
         let camera = self.camera_apps.lock().map(|apps| apps.clone()).unwrap_or_default();
-        let usage = Usage { camera, microphone };
+        let usage = Usage { camera, microphone, callers };
         if self.last.as_ref() != Some(&usage) {
             self.notify.send(Event::Privacy(usage.clone()));
             self.last = Some(usage);
         }
     }
 
-    /// Daftarkan pendengar di semua perangkat input dan sesinya; kembalikan aplikasi yang
-    /// sedang merekam.
-    fn attach(&mut self) -> Result<Vec<String>> {
-        let mut apps = Vec::new();
+    /// Mikrofon yang sedang dipakai aplikasi panggilan.
+    pub fn call_devices(&self) -> &[String] {
+        &self.call_devices
+    }
+
+    /// Daftarkan pendengar di semua perangkat input dan sesinya; kembalikan sesi yang sedang
+    /// merekam.
+    fn attach(&mut self) -> Result<Vec<Recorder>> {
+        let mut recorders = Vec::new();
         unsafe {
             let devices = self.enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)?;
             for i in 0..devices.GetCount()? {
-                let manager: IAudioSessionManager2 = devices.Item(i)?.Activate(CLSCTX_ALL, None)?;
+                let device = devices.Item(i)?;
+                let manager: IAudioSessionManager2 = device.Activate(CLSCTX_ALL, None)?;
+                let id = device_id(&device);
                 // Pendengar sesi baru harus didaftarkan sebelum sesi-sesinya dibaca.
                 manager.RegisterSessionNotification(&self.watcher)?;
                 let list = manager.GetSessionEnumerator()?;
@@ -111,17 +132,15 @@ impl Monitor {
                     let session = list.GetSession(j)?;
                     let events: IAudioSessionEvents = self.watcher.cast()?;
                     let _ = session.RegisterAudioSessionNotification(&events);
-                    if let Some(app) = recording_app(&session) {
-                        apps.push(app);
+                    if let Some(path) = recording_app(&session) {
+                        recorders.push(Recorder { app: app_name(&path), mediator: is_mediator(&path), device: id.clone() });
                     }
                     self.sessions.push((session, events));
                 }
                 self.managers.push((manager, self.watcher.clone()));
             }
         }
-        apps.sort();
-        apps.dedup();
-        Ok(apps)
+        Ok(recorders)
     }
 
     fn detach(&mut self) {
@@ -145,7 +164,36 @@ impl Drop for Monitor {
     }
 }
 
-/// Aplikasi pemilik sesi kalau sesinya sedang aktif merekam (bukan suara sistem, bukan notch).
+/// Sesi rekaman yang aktif: aplikasinya dan mikrofon yang dipakainya.
+struct Recorder {
+    app: String,
+    mediator: bool,
+    device: String,
+}
+
+/// Perantara mikrofon (peredam bising, mixer) dan fitur dengar Windows (Akses suara, Teks
+/// langsung) yang memakai mikrofon terus-menerus. Bukan panggilan; aplikasi yang memakai
+/// mikrofon lewat perantara itu tetap terdeteksi di mikrofon virtualnya.
+const MEDIATORS: [&str; 7] = ["voicemeeter", "nvidiabroadcast", "rtxvoice", "wavelink", "krisp", "voiceaccess", "livecaptions"];
+
+/// `path` (jalur exe) adalah perantara mikrofon, dicocokkan dari nama file tanpa spasi.
+fn is_mediator(path: &str) -> bool {
+    let file = path.rsplit(['\\', '/']).next().unwrap_or(path).to_lowercase();
+    let name: String = file.trim_end_matches(".exe").chars().filter(|c| c.is_alphanumeric()).collect();
+    MEDIATORS.iter().any(|m| name.contains(m))
+}
+
+/// Id perangkat (untuk `IMMDeviceEnumerator::GetDevice`); kosong kalau tidak terbaca.
+fn device_id(device: &IMMDevice) -> String {
+    unsafe {
+        let Ok(id) = device.GetId() else { return String::new() };
+        let text = id.to_string().unwrap_or_default();
+        CoTaskMemFree(Some(id.0 as *const _));
+        text
+    }
+}
+
+/// Jalur exe pemilik sesi kalau sesinya sedang aktif merekam (bukan suara sistem, bukan notch).
 fn recording_app(session: &IAudioSessionControl) -> Option<String> {
     unsafe {
         if session.GetState().ok()? != AudioSessionStateActive {
@@ -155,7 +203,7 @@ fn recording_app(session: &IAudioSessionControl) -> Option<String> {
         if session.IsSystemSoundsSession() == S_OK {
             return None;
         }
-        process_name(session.GetProcessId().ok()?)
+        process_path(session.GetProcessId().ok()?)
     }
 }
 
@@ -171,6 +219,11 @@ fn start_camera(tasks: Sender<Task>, apps: Arc<Mutex<Vec<String>>>) -> Result<IM
 
 /// Nama aplikasi yang enak dibaca dari id proses.
 fn process_name(pid: u32) -> Option<String> {
+    process_path(pid).map(|path| app_name(&path))
+}
+
+/// Jalur exe proses (bukan notch sendiri).
+fn process_path(pid: u32) -> Option<String> {
     if pid == 0 || pid == std::process::id() {
         return None;
     }
@@ -180,7 +233,7 @@ fn process_name(pid: u32) -> Option<String> {
         let mut len = buf.len() as u32;
         let ok = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
         let _ = CloseHandle(process);
-        ok.then(|| app_name(&String::from_utf16_lossy(&buf[..len as usize])))
+        ok.then(|| String::from_utf16_lossy(&buf[..len as usize]))
     }
 }
 
@@ -273,5 +326,25 @@ impl IMFSensorActivitiesReportCallback_Impl for CameraWatcher_Impl {
             let _ = self.tasks.send(Task::PrivacyChanged);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mediators() {
+        for path in [
+            r"C:\Program Files (x86)\VB\Voicemeeter\voicemeeter8x64.exe",
+            r"C:\Program Files\NVIDIA Corporation\NVIDIA Broadcast\NVIDIA Broadcast.exe",
+            r"C:\Program Files\Elgato\WaveLink\WaveLink.exe",
+            r"C:\Windows\System32\VoiceAccess.exe",
+        ] {
+            assert!(is_mediator(path), "{path}");
+        }
+        for path in [r"C:\Users\a\AppData\Local\Discord\app-1.0\Discord.exe", r"C:\Program Files\Zoom\bin\Zoom.exe", "ms-teams.exe"] {
+            assert!(!is_mediator(path), "{path}");
+        }
     }
 }

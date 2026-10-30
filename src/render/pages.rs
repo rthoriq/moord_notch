@@ -36,6 +36,12 @@ impl Renderer {
         let p = &self.pal;
         let cy = h / 2.0;
         let playing = s.media.filter(|m| m.playing);
+        if let Some(call) = s.call
+            && playing.is_none()
+        {
+            self.call_pill(s, call, x0, x1, h, a);
+            return;
+        }
         let focus = Some(s.focus).filter(|f| f.running);
         let timer = Some(s.timer).filter(|t| t.running);
         // Kiri: cincin timer atau pomodoro, sampul lagu, atau mata maskot.
@@ -66,9 +72,49 @@ impl Renderer {
             }
             (None, None, None, None) => {}
         }
-        self.privacy_dot(s.privacy, x1 - 8.0, cy, a);
+        self.pill_dot(s, x1 - 8.0, cy, a);
         let time_right = if download.is_some() { x1 - 100.0 } else { x1 - 34.0 };
         self.text(s.time, &self.fonts.pill_time, rect(x0 + 34.0, 0.0, time_right, h), p.text, a);
+    }
+
+    /// Pil selama panggilan tanpa lagu yang diputar: tombol mikrofon di kiri, jam, dan lama
+    /// panggilan di kanan.
+    fn call_pill(&self, s: &Scene, call: &CallView, x0: f32, x1: f32, h: f32, a: f32) {
+        let p = &self.pal;
+        let cy = h / 2.0;
+        self.call_button(s, call, x0, h, a);
+        self.text(&call.clock, &self.fonts.caption_end, rect(x1 - 64.0, 0.0, x1 - 13.0, h), GREEN, a);
+        // Mikrofon sudah terlihat dari ikonnya, jadi titiknya hanya untuk kamera.
+        if call.camera {
+            self.circle(x1 - 8.0, cy, 3.0, GREEN, a);
+        }
+        // Kotak jam simetris supaya jamnya tetap di tengah pil, sama seperti pil biasa.
+        self.text(s.time, &self.fonts.pill_time, rect(x0 + 34.0, 0.0, x1 - 34.0, h), p.text, a);
+    }
+
+    /// Tombol bisu panggilan di kiri pil, di tempat mata maskot: mikrofon hijau, atau merah
+    /// dicoret saat bisu.
+    fn call_button(&self, s: &Scene, call: &CallView, x0: f32, h: f32, a: f32) {
+        let cy = h / 2.0;
+        if s.hovered == Some(Hit::CallMute) {
+            self.circle(x0 + 18.0, cy, 11.0, self.tint(0.16), a);
+        }
+        let (icon, color) = if call.muted == Some(true) { (ICON_MIC_OFF, RED) } else { (ICON_MICROPHONE, GREEN) };
+        self.glyph(icon, &self.fonts.icon_13, x0 + 18.0, cy, color, a);
+        self.hit(rect(x0, 0.0, x0 + 34.0, h), Hit::CallMute);
+    }
+
+    /// Titik di ujung kanan pil. Selama panggilan sambil memutar lagu, titik ini satu-satunya
+    /// tanda panggilan: hijau kalau kamera menyala, merah kalau mikrofon dibisukan, selain itu
+    /// oranye seperti mikrofon yang sedang dipakai.
+    fn pill_dot(&self, s: &Scene, cx: f32, cy: f32, a: f32) {
+        let color = match s.call {
+            Some(call) if call.camera => GREEN,
+            Some(call) if call.muted == Some(true) => RED,
+            Some(_) => ORANGE,
+            None => return self.privacy_dot(s.privacy, cx, cy, a),
+        };
+        self.circle(cx, cy, 3.0, color, a);
     }
 
     /// Pil lebar saat lirik aktif: sampul, baris lirik, dan gelombang.
@@ -86,7 +132,7 @@ impl Renderer {
         }
         let color = s.media.and_then(|m| m.accent);
         self.wave(x1 - 22.0, cy, s.seconds, accent(color, p.text), a);
-        self.privacy_dot(s.privacy, x1 - 8.0, cy, a);
+        self.pill_dot(s, x1 - 8.0, cy, a);
     }
 
     pub(super) fn draw_hud(&self, s: &Scene, hud: &Hud, x0: f32, x1: f32, h: f32, a: f32) {
@@ -142,6 +188,13 @@ impl Renderer {
                 if let Some(percent) = percent {
                     self.text(&format!("{percent}%"), &self.fonts.label_end, row(x1 - 60.0, x1 - 14.0), color, a);
                 }
+            }
+            Hud::Mic { muted } => {
+                let (icon, color) = if *muted { (ICON_MIC_OFF, RED) } else { (ICON_MICROPHONE, GREEN) };
+                self.glyph(icon, &self.fonts.icon_13, x0 + 22.0, cy, color, a);
+                self.text("Mikrofon", &self.fonts.label, row(x0 + 38.0, x1 - 90.0), p.text, a);
+                let state = if *muted { "Bisu" } else { "Menyala" };
+                self.text(state, &self.fonts.label_end, row(x1 - 90.0, x1 - 14.0), color, a);
             }
             // Kabar lain selalu memakai bentuk kartu.
             _ => self.draw_hud_card(s, hud, x0, x1, a),
@@ -276,6 +329,21 @@ impl Renderer {
                 self.text("Timer selesai", &self.fonts.label, row(x0 + 50.0, x1 - 100.0), p.text, a);
                 self.text(&format!("{minutes} menit"), &self.fonts.caption_end, row(x1 - 100.0, x1 - 20.0), ORANGE, a);
             }
+            Hud::Mic { muted } => {
+                let (icon, color, label) =
+                    if *muted { (ICON_MIC_OFF, RED, "Mikrofon dibisukan") } else { (ICON_MICROPHONE, GREEN, "Mikrofon menyala") };
+                self.circle(x0 + 28.0, cy, 13.0, color, a);
+                self.glyph(icon, &self.fonts.icon_13, x0 + 28.0, cy, WHITE, a);
+                self.text(label, &self.fonts.label, row(x0 + 50.0, x1 - 20.0), p.text, a);
+            }
+            Hud::CallEnded { app, length } => {
+                self.circle(x0 + 28.0, cy, 13.0, p.dim, a);
+                self.glyph(ICON_PHONE, &self.fonts.icon_13, x0 + 28.0, cy, WHITE, a);
+                self.text("Panggilan selesai", &self.fonts.label, rect(x0 + 50.0, 6.0, x1 - 90.0, 22.0), p.text, a);
+                self.text(length, &self.fonts.label_end, rect(x1 - 100.0, 6.0, x1 - 20.0, 22.0), GREEN, a);
+                let detail = if app.is_empty() { "Mikrofon sudah dilepas".to_string() } else { format!("{app} sudah melepas mikrofon") };
+                self.text(&detail, &self.fonts.caption, rect(x0 + 50.0, 22.0, x1 - 20.0, 37.0), p.muted, a);
+            }
         }
     }
 
@@ -331,12 +399,15 @@ impl Renderer {
         let mix = if s.lyrics.is_some() { s.lyric_mix.clamp(0.0, 1.0) } else { 0.0 };
         let full = if s.calendar.is_some() { HOME_LEFT } else { r - l };
         let right = l + lerp(full, LYRIC_LEFT, mix).min(r - l);
-        match s.media {
-            Some(m) => {
+        // Selama panggilan, pemutar tetap tampil (panggilannya pindah ke kepala pemutar); tanpa
+        // pemutar, kartu panggilan menggantikan jam.
+        match (s.call, s.media) {
+            (_, Some(m)) => {
                 self.player_header(s, m, x0, x1, a);
                 self.media_page(s, m, l, right, a);
             }
-            None => self.clock_page(s, l, right, a),
+            (Some(call), None) => self.call_page(s, call, l, right, a),
+            (None, None) => self.clock_page(s, l, right, a),
         }
         let divider = if s.calendar.is_some() { 1.0 } else { mix };
         if divider > 0.01 && r - right > 40.0 {
@@ -366,7 +437,7 @@ impl Renderer {
             // Ditata selebar kolom akhirnya dan hanya terpotong selama notch masih melebar, supaya
             // barisnya tidak dibungkus ulang tiap frame.
             let width = View::PanelWide.size().0 - 2.0 * MARGIN - LYRIC_LEFT - 24.0;
-            self.lyrics_column(lyrics, cl, cr.max(cl + width), a * enter);
+            self.lyrics_column(s, lyrics, cl, cr.max(cl + width), a * enter);
         }
         self.set_offset(dx, dy);
         self.pop_clip();
@@ -374,11 +445,14 @@ impl Renderer {
     }
 
     /// Kepala pemutar: tanggal dan jam di tengah dengan cincin baterai, cuaca di kiri, dan
-    /// gelombang musik di kanan.
+    /// gelombang musik di kanan. Selama panggilan, tanggal dan cuaca memberi tempat untuk
+    /// panggilannya di kiri dan tombol bisu kecil di kanan.
     fn player_header(&self, s: &Scene, m: &MediaView, x0: f32, x1: f32, a: f32) {
         let p = &self.pal;
         let (l, r) = (x0 + MARGIN, x1 - MARGIN);
-        let date_w = self.text_width(s.day, &self.fonts.caption);
+        let day = if s.call.is_some() { "" } else { s.day };
+        // Tanpa tanggal, jarak sesudahnya juga hilang.
+        let date_w = if day.is_empty() { -6.0 } else { self.text_width(day, &self.fonts.caption) };
         let time_w = self.text_width(s.time, &self.fonts.label);
         let ring = if s.battery.is_some() { 18.0 } else { 0.0 };
         let total = ring + date_w + 6.0 + time_w;
@@ -388,15 +462,44 @@ impl Renderer {
             self.battery_ring(percent, plugged, x + 5.5, a);
             x += ring;
         }
-        self.text(s.day, &self.fonts.caption, rect(x, HEADER_Y - 8.0, x + date_w + 2.0, HEADER_Y + 8.0), p.soft, a);
+        if !day.is_empty() {
+            self.text(day, &self.fonts.caption, rect(x, HEADER_Y - 8.0, x + date_w + 2.0, HEADER_Y + 8.0), p.soft, a);
+        }
         x += date_w + 6.0;
         self.text(s.time, &self.fonts.label, rect(x, HEADER_Y - 9.0, x + time_w + 2.0, HEADER_Y + 9.0), p.text, a);
-        if let Some(weather) = s.weather {
+        if let Some(call) = s.call {
+            self.header_call(s, call, l, start - 12.0, r - 32.0, a);
+        } else if let Some(weather) = s.weather {
             self.text(weather, &self.fonts.caption, rect(l, HEADER_Y - 8.0, start - 12.0, HEADER_Y + 8.0), p.muted, a);
         }
         if m.playing {
             self.wave(r - 8.0, HEADER_Y, s.seconds, accent(m.accent, p.text), a);
         }
+    }
+
+    /// Panggilan di kepala pemutar: titik hijau, aplikasi, dan lama panggilan di antara `l` dan
+    /// `r`, plus tombol bisu kecil berpusat di `button`.
+    fn header_call(&self, s: &Scene, call: &CallView, l: f32, r: f32, button: f32, a: f32) {
+        let p = &self.pal;
+        self.circle(l + 3.5, HEADER_Y, 3.5, GREEN, a);
+        let app = if call.app.is_empty() { "Panggilan" } else { call.app.as_str() };
+        let label = format!("{app} · ");
+        // Nama aplikasi yang panjang dipotong; lama panggilannya selalu utuh.
+        let clock_w = self.text_width(&call.clock, &self.fonts.caption) + 2.0;
+        let clock_l = (l + 12.0 + self.text_width(&label, &self.fonts.caption)).min(r - clock_w);
+        self.text(&label, &self.fonts.caption, rect(l + 12.0, HEADER_Y - 8.0, clock_l, HEADER_Y + 8.0), p.soft, a);
+        self.text(&call.clock, &self.fonts.caption, rect(clock_l, HEADER_Y - 8.0, clock_l + clock_w, HEADER_Y + 8.0), GREEN, a);
+
+        let muted = call.muted == Some(true);
+        let over = s.hovered == Some(Hit::CallMute);
+        let fill = if muted { RED } else { self.tint(if over { 0.2 } else { 0.12 }) };
+        self.circle(button, HEADER_Y, 10.0, fill, a);
+        if muted && over {
+            self.circle(button, HEADER_Y, 10.0, rgb(0xFFFFFF, 0.15), a);
+        }
+        let icon = if muted { ICON_MIC_OFF } else { ICON_MICROPHONE };
+        self.glyph(icon, &self.fonts.icon_11, button, HEADER_Y, if muted { WHITE } else { p.text }, a);
+        self.hit(rect(button - 13.0, HEADER_Y - 13.0, button + 13.0, HEADER_Y + 13.0), Hit::CallMute);
     }
 
     /// Cincin baterai kecil di kepala halaman: hijau saat mengisi, merah saat hampir habis.
@@ -420,11 +523,23 @@ impl Renderer {
 
     /// Kolom lirik: baris yang sedang dinyanyikan terang di tengah, baris sebelum dan sesudahnya
     /// redup. Saat baris berganti, semuanya bergulir naik satu baris.
-    fn lyrics_column(&self, lyrics: &LyricsView, l: f32, r: f32, a: f32) {
+    fn lyrics_column(&self, s: &Scene, lyrics: &LyricsView, l: f32, r: f32, a: f32) {
         let p = &self.pal;
         if let Some(status) = lyrics.status {
-            self.glyph(ICON_MUSIC, &self.fonts.icon_16, l + 8.0, LYRIC_CENTER, p.muted, a);
-            self.text(status, &self.fonts.body, rect(l + 26.0, LYRIC_CENTER - 10.0, r, LYRIC_CENTER + 10.0), p.muted, a);
+            if !lyrics.retry {
+                self.glyph(ICON_MUSIC, &self.fonts.icon_16, l + 8.0, LYRIC_CENTER, p.muted, a);
+                self.text(status, &self.fonts.body, rect(l + 26.0, LYRIC_CENTER - 10.0, r, LYRIC_CENTER + 10.0), p.muted, a);
+                return;
+            }
+            // Bisa diklik: ikon muat ulang dan ajakan mencoba lagi di bawahnya.
+            let over = s.hovered == Some(Hit::LyricsRetry);
+            let (y, color) = (LYRIC_CENTER - 8.0, if over { p.text } else { p.muted });
+            self.glyph(ICON_REFRESH, &self.fonts.icon_16, l + 8.0, y, color, a);
+            self.text(status, &self.fonts.body, rect(l + 26.0, y - 10.0, r, y + 10.0), color, a);
+            let hint = if over { p.soft } else { p.dim };
+            self.text("Klik untuk mencoba lagi", &self.fonts.caption, rect(l + 26.0, y + 10.0, r, y + 26.0), hint, a);
+            let width = self.text_width(status, &self.fonts.body).max(self.text_width("Klik untuk mencoba lagi", &self.fonts.caption));
+            self.hit(rect(l - 4.0, y - 16.0, (l + 30.0 + width).min(r), y + 28.0), Hit::LyricsRetry);
             return;
         }
         let eased = 1.0 - (1.0 - lyrics.scroll.clamp(0.0, 1.0)).powi(3);
@@ -528,6 +643,48 @@ impl Renderer {
         self.eyes(r - 40.0, 76.0, 13.0, 30.0, 25.0, s.eyes, a);
         // Kepala seperti di pemutar: cuaca di kiri, baterai di kanan. Di Beranda lebar keduanya
         // tampil di kepala kolom kalender.
+        if s.calendar.is_some() {
+            return;
+        }
+        if let Some(weather) = s.weather {
+            self.text(weather, &self.fonts.caption, rect(l, HEADER_Y - 8.0, r - 80.0, HEADER_Y + 8.0), p.muted, a);
+        }
+        if let Some((percent, plugged)) = s.battery {
+            self.battery_ring(percent, plugged, r - 6.0, a);
+            self.text(&format!("{percent}%"), &self.fonts.caption_end, rect(r - 70.0, HEADER_Y - 8.0, r - 16.0, HEADER_Y + 8.0), p.soft, a);
+        }
+    }
+
+    /// Kartu panggilan di Beranda, di antara `l` dan `r`: aplikasi, lama panggilan, status
+    /// mikrofon dan kamera, dan tombol bisu besar di tempat mata maskot.
+    fn call_page(&self, s: &Scene, call: &CallView, l: f32, r: f32, a: f32) {
+        let p = &self.pal;
+        self.circle(l + 4.0, 43.0, 3.5, GREEN, a);
+        let title = if call.app.is_empty() { "Sedang dalam panggilan".to_string() } else { format!("Panggilan di {}", call.app) };
+        self.text(&title, &self.fonts.greeting, rect(l + 14.0, 34.0, r - 90.0, 52.0), p.muted, a);
+        self.text(&call.clock, &self.fonts.big_time, rect(l - 2.0, 50.0, r - 90.0, 102.0), p.text, a);
+        let muted = call.muted == Some(true);
+        let (mic, mic_color) = if muted { ("Mikrofon bisu", RED) } else { ("Mikrofon menyala", p.soft) };
+        let camera = if call.camera { " · Kamera menyala" } else { " · Kamera mati" };
+        let mic_w = self.text_width(mic, &self.fonts.date);
+        self.text(mic, &self.fonts.date, rect(l, 98.0, l + mic_w + 2.0, 116.0), mic_color, a);
+        self.text(camera, &self.fonts.date, rect(l + mic_w, 98.0, r - 90.0, 116.0), p.soft, a);
+
+        let (cx, cy) = (r - 40.0, 70.0);
+        let over = s.hovered == Some(Hit::CallMute);
+        let fill = if muted { RED } else { self.tint(if over { 0.2 } else { 0.12 }) };
+        self.circle(cx, cy, 24.0, fill, a);
+        if muted && over {
+            self.circle(cx, cy, 24.0, rgb(0xFFFFFF, 0.15), a);
+        }
+        let icon = if muted { ICON_MIC_OFF } else { ICON_MICROPHONE };
+        self.glyph(icon, &self.fonts.icon_20, cx, cy, if muted { WHITE } else { p.text }, a);
+        let label = if muted { "Nyalakan" } else { "Bisukan" };
+        self.text(label, &self.fonts.caption_center, rect(cx - 40.0, 98.0, cx + 40.0, 116.0), if over { p.text } else { p.soft }, a);
+        self.hit(rect(cx - 30.0, cy - 30.0, cx + 30.0, 116.0), Hit::CallMute);
+
+        // Kepala seperti jam: cuaca di kiri, baterai di kanan (di Beranda lebar keduanya ada di
+        // kepala kolom kalender).
         if s.calendar.is_some() {
             return;
         }
@@ -644,7 +801,9 @@ impl Renderer {
         let (l, r) = (x0 + MARGIN, x1 - MARGIN);
         let c = s.controls;
         let right = c.quiet_minutes.map(|m| format!("Senyap {m} mnt lagi")).unwrap_or_default();
-        self.header(s, Some(ICON_CONTROLS), "Kontrol cepat", &right, None, x0, x1, a);
+        // Tanpa hitung mundur senyap, kepala halaman berisi tombol ke jendela pengaturan.
+        let (right, hit) = if right.is_empty() { ("Pengaturan".to_string(), Some(Hit::OpenSettings)) } else { (right, None) };
+        self.header(s, Some(ICON_CONTROLS), "Kontrol cepat", &right, hit, x0, x1, a);
 
         let (icon, value, label, color) = match c.volume {
             Some((level, true)) => (ICON_MUTE, Some(level), "Bisu".to_string(), p.muted),

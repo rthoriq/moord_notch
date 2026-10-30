@@ -140,6 +140,10 @@ pub enum Hud {
     Wifi { name: String, connected: bool, internet: bool },
     /// Timer cepat habis setelah `minutes` menit.
     Timer { minutes: u32 },
+    /// Mikrofon dibisukan atau dinyalakan lewat Win+Alt+S.
+    Mic { muted: bool },
+    /// Panggilan selesai setelah `length`, misal "42 menit".
+    CallEnded { app: String, length: String },
 }
 
 /// Ekspresi maskot.
@@ -188,6 +192,8 @@ pub enum Hit {
     Media(Button),
     /// Tombol lirik di bawah pemutar: tampilkan/sembunyikan kolom lirik.
     LyricsToggle,
+    /// Keterangan di kolom lirik ("Lirik tidak tersedia", "Server lirik sibuk"): cari lagi.
+    LyricsRetry,
     /// Bar progres lagu (bisa diklik/diseret untuk lompat, lihat [`Renderer::slider_value`]).
     MediaSeek,
     /// Latar deretan ubin shelf (untuk roda mouse).
@@ -195,6 +201,8 @@ pub enum Hit {
     ShelfItem(u64),
     ShelfRemove(u64),
     ShelfClear,
+    /// Tombol "Pengaturan" di kepala halaman kontrol cepat.
+    OpenSettings,
     FocusToggle,
     FocusReset,
     FocusPhase(Phase),
@@ -211,6 +219,8 @@ pub enum Hit {
     BrightnessSlider,
     VolumeMute,
     MicToggle,
+    /// Tombol mikrofon panggilan, di pil dan di Beranda.
+    CallMute,
     QuietToggle,
     CityInput,
     TimerToggle,
@@ -259,6 +269,7 @@ pub struct MediaView {
 }
 
 /// Kolom lirik di samping pemutar: lima baris di sekitar baris yang sedang dinyanyikan.
+#[derive(Clone)]
 pub struct LyricsView {
     /// Dua baris sebelumnya, baris sekarang (tengah), dan dua baris berikutnya; kosong kalau
     /// di luar lagu.
@@ -267,6 +278,8 @@ pub struct LyricsView {
     pub scroll: f32,
     /// Keterangan pengganti lirik, misal "Mencari lirik…".
     pub status: Option<&'static str>,
+    /// Keterangannya bisa diklik untuk mencari liriknya lagi.
+    pub retry: bool,
 }
 
 pub struct FocusView {
@@ -357,6 +370,17 @@ pub struct ShelfFx {
     pub tiles: HashMap<u64, (f32, f32)>,
 }
 
+/// Panggilan yang sedang berlangsung, untuk pil dan Beranda.
+pub struct CallView {
+    /// Aplikasi panggilan, misal "Zoom"; kosong di lock screen.
+    pub app: String,
+    /// Lama panggilan, misal "12:34".
+    pub clock: String,
+    /// Mikrofon panggilan dibisukan; `None` kalau tidak diketahui.
+    pub muted: Option<bool>,
+    pub camera: bool,
+}
+
 /// Isi halaman kontrol cepat; `None` berarti tidak tersedia di laptop ini.
 pub struct ControlsView {
     /// Volume 0..1 dan bisu.
@@ -436,6 +460,8 @@ pub struct Scene<'a> {
     pub city_draft: Option<&'a str>,
     /// Unduhan yang sedang berjalan di pil, misal "12,4 MB" atau "2 · 30,1 MB".
     pub download: Option<&'a str>,
+    /// Panggilan aktif: menggantikan isi pil dan jam/pemutar di Beranda.
+    pub call: Option<&'a CallView>,
     /// Kolom kalender; `None` = Beranda biasa (kalender dimatikan atau di lock screen).
     pub calendar: Option<&'a CalendarView>,
     /// Agenda yang sedang diketik.
@@ -463,6 +489,13 @@ struct Palette {
     accent: D2D1_COLOR_F,
     /// Tema kaca: tepi terang tipis dan bayangan teks supaya tetap terbaca di atas wallpaper.
     glass: bool,
+}
+
+/// Warna badan dan mata notch untuk sebuah tema, dan apakah temanya kaca (contoh di jendela
+/// pengaturan).
+pub fn theme_colors(theme: Theme) -> (D2D1_COLOR_F, D2D1_COLOR_F, bool) {
+    let p = palette(theme);
+    (p.body, p.eye, p.glass)
 }
 
 fn palette(theme: Theme) -> Palette {
@@ -569,6 +602,7 @@ const ICON_TASKS: char = '\u{E9D5}';
 const ICON_SYSTEM: char = '\u{E9D9}';
 const ICON_CAMERA: char = '\u{E722}';
 const ICON_MICROPHONE: char = '\u{E720}';
+const ICON_MIC_OFF: char = '\u{EC54}';
 const ICON_BRIGHTNESS: char = '\u{E706}';
 const ICON_MESSAGE: char = '\u{E8BD}';
 const ICON_DOWNLOAD: char = '\u{E896}';
@@ -863,7 +897,8 @@ impl Renderer {
         let shape = self.notch_path(cx, w, h, radius, flare)?;
         let [pill, lyric, hud, panel] = scene.alpha;
         self.hits.borrow_mut().clear();
-        self.recording.set(panel >= 0.999 && scene.page_from.is_none());
+        // Pil yang diam (biasa atau lirik) hanya punya satu tombol: bisu panggilan.
+        self.recording.set((panel >= 0.999 || pill >= 0.999 || lyric >= 0.999) && scene.page_from.is_none());
 
         unsafe {
             let bounds = RECT { left: 0, top: 0, right: self.surface.width, bottom: self.surface.height };
@@ -924,7 +959,7 @@ impl Renderer {
     /// dan melirik. Kotaknya cukup besar untuk lirikan terjauh dan mata yang membulat.
     pub fn draw_eyes(&self, w: f32, h: f32, eyes: Eyes) -> Result<RECT> {
         let (cx, cy) = (CANVAS.0 / 2.0 - w / 2.0 + 18.0, h / 2.0);
-        self.patch(cx, cy, 11.0, 7.5, || self.eyes(cx, cy, 3.4, 9.0, 7.5, eyes, 1.0))
+        self.patch(cx, cy, 12.0, 7.5, || self.eyes(cx, cy, 3.4, 9.0, 7.5, eyes, 1.0))
     }
 
     /// Gambar ulang kotak kecil berpusat di (`cx`, `cy`) yang seluruhnya berada di dalam badan
@@ -1070,7 +1105,13 @@ impl Renderer {
     /// ekspresi mengubah bentuknya.
     fn eyes(&self, cx: f32, cy: f32, eye_w: f32, eye_h: f32, gap: f32, eyes: Eyes, alpha: f32) {
         let (dx, dy) = (eyes.look.0 * eye_w * 0.8, eyes.look.1 * eye_h * 0.16);
-        let gap = if eyes.mood == Mood::Surprised { gap * 1.15 } else { gap };
+        // Mata membulat sedikit melebar; mata "^ ^" lebih lebar lagi supaya kedua lengkungnya tidak
+        // bertemu dan terlihat seperti huruf "m".
+        let gap = match eyes.mood {
+            Mood::Surprised => gap * 1.15,
+            Mood::Happy => gap * 1.3,
+            _ => gap,
+        };
         for x in [cx - gap / 2.0 + dx, cx + gap / 2.0 + dx] {
             let y = cy + dy;
             let (w, h, y) = match eyes.mood {
@@ -1499,8 +1540,8 @@ fn icon_surface(size: i32) -> Result<Surface> {
 }
 
 /// Bitmap 32-bit (BGRA) di memori yang menjadi kanvas gambar jendela.
-struct Surface {
-    dc: HDC,
+pub(crate) struct Surface {
+    pub(crate) dc: HDC,
     bitmap: HBITMAP,
     old: HGDIOBJ,
     bits: *mut u32,
@@ -1509,7 +1550,7 @@ struct Surface {
 }
 
 impl Surface {
-    fn new(width: i32, height: i32) -> Result<Self> {
+    pub(crate) fn new(width: i32, height: i32) -> Result<Self> {
         unsafe {
             let dc = CreateCompatibleDC(None);
             let info = BITMAPINFO {
@@ -1537,7 +1578,7 @@ impl Surface {
         }
     }
 
-    fn pixels(&mut self) -> &mut [u32] {
+    pub(crate) fn pixels(&mut self) -> &mut [u32] {
         unsafe { std::slice::from_raw_parts_mut(self.bits, (self.width * self.height) as usize) }
     }
 }
@@ -1552,7 +1593,7 @@ impl Drop for Surface {
     }
 }
 
-fn dc_target(factory: &ID2D1Factory, dpi: f32) -> Result<ID2D1DCRenderTarget> {
+pub(crate) fn dc_target(factory: &ID2D1Factory, dpi: f32) -> Result<ID2D1DCRenderTarget> {
     let props = D2D1_RENDER_TARGET_PROPERTIES {
         // Software: tidak memuat driver GPU, cukup untuk bentuk sekecil ini.
         r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,

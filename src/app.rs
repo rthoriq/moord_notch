@@ -53,10 +53,11 @@ use crate::media::{self, Snapshot};
 use crate::power::{self, Power};
 use crate::privacy::Usage;
 use crate::render::{
-    self, AgendaItem, Button, CONTENTS, CalendarView, ControlsView, DayView, Eyes, FocusView, Hit, Hud, LyricsView,
+    self, AgendaItem, Button, CONTENTS, CalendarView, CallView, ControlsView, DayView, Eyes, FocusView, Hit, Hud, LyricsView,
     MediaView, Mood, Renderer, Roll, Scene, ShelfFx, TimerView, View, WaterView, hud_value,
 };
 use crate::services::{self, Event, Services, Task};
+use crate::settings_window;
 use crate::settings::{Messages, Settings, Size};
 use crate::sound::{self, Sound};
 use crate::folders::{self, Watch};
@@ -68,6 +69,7 @@ use crate::widgets::focus::{self, Focus};
 use crate::widgets::shelf::{self, Shelf};
 use crate::widgets::tasks::{self, Tasks};
 use crate::widgets::agenda::{self, Agenda, Date};
+use crate::widgets::call::{self, CallApps, Calls};
 use crate::widgets::timer::{self, Timer};
 use crate::widgets::water::{GOAL_ML, Water};
 use crate::weather::{self, City, Weather};
@@ -106,11 +108,17 @@ const TIMER_QUIET: usize = 15;
 /// Sambutan pertama kali muncul sesudah maskot selesai bangun.
 const TIMER_WELCOME: usize = 16;
 const WELCOME_DELAY_MS: u32 = 1_300;
+/// Panggilan mulai tampil, atau jedanya habis (lihat `widgets::call`).
+const TIMER_CALL: usize = 17;
+/// Cari lirik lagu yang baru diputar (sesudah datanya lengkap), atau coba lagi sesudah server
+/// lirik error.
+const TIMER_LYRICS: usize = 18;
 /// Hasil langkah Administrator untuk pesan masuk (lihat `identity`): 0 berhasil, 1 gagal,
 /// 2 izin Administrator ditolak.
 const WM_IDENTITY: u32 = WM_APP + 7;
-/// Id pintasan Win+Alt+N.
+/// Id pintasan Win+Alt+N (panel) dan Win+Alt+S (bisu mikrofon).
 const HOTKEY_ID: i32 = 1;
+const HOTKEY_MIC_ID: i32 = 2;
 
 const POLL_MS: u32 = 1_000;
 /// Jeda sebelum membuka, supaya tidak terbuka saat kursor hanya lewat menuju tab browser.
@@ -150,6 +158,8 @@ const MESSAGE_HUD_MS: u32 = 5_000;
 const SCREENSHOT_HUD_MS: u32 = 4_000;
 const DOWNLOAD_HUD_MS: u32 = 4_500;
 const WIFI_HUD_MS: u32 = 3_000;
+const MIC_HUD_MS: u32 = 1_400;
+const CALL_END_HUD_MS: u32 = 5_000;
 /// Panel yang dibuka dengan pintasan menutup sendiri kalau kursor tidak datang.
 const HOTKEY_CLOSE_MS: u32 = 5_000;
 /// Seberapa sering posisi kursor dilihat selama mata maskot terlihat; lebih jarang kalau
@@ -269,11 +279,22 @@ pub fn run() -> Result<()> {
             }
         }
 
+        settings_window::close();
         // Melepas App menghapus ikon tray, hook, dan menghentikan layanan sebelum jendela dihancurkan.
         APP.with(|cell| cell.borrow_mut().take());
         let _ = DestroyWindow(hwnd);
         Ok(())
     }
+}
+
+/// Keadaan untuk jendela pengaturan (`None` kalau state sedang dipakai).
+pub fn snapshot() -> Option<MenuState> {
+    with_app(|app| app.menu_state())
+}
+
+/// Jalankan perintah dari jendela pengaturan.
+pub fn command(command: Command) {
+    with_app(|app| app.on_command(command));
 }
 
 /// Akses state aplikasi. Mengembalikan `None` kalau state sedang dipakai, misalnya saat
@@ -288,10 +309,13 @@ fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // Menu tray dan seret-keluar punya loop pesan sendiri, jadi dijalankan di luar state aplikasi.
     if msg == tray::WM_TRAY {
+        // Klik kiri membuka pengaturan; klik kanan menu singkat (pengaturan, tampilkan, keluar).
         let event = (lparam.0 & 0xFFFF) as u32;
-        if (event == WM_LBUTTONUP || event == WM_RBUTTONUP)
-            && let Some(state) = with_app(|app| app.menu_state())
-            && let Some(command) = tray::show_menu(hwnd, state)
+        if event == WM_LBUTTONUP {
+            settings_window::open();
+        } else if event == WM_RBUTTONUP
+            && let Some(visible) = with_app(|app| !app.user_hidden)
+            && let Some(command) = tray::show_menu(hwnd, visible)
         {
             with_app(|app| app.on_command(command));
         }
@@ -361,9 +385,12 @@ struct App {
     /// Aplikasi yang sedang memakai kamera/mikrofon; `privacy_known` false sampai kabar pertama.
     privacy: Usage,
     privacy_known: bool,
-    /// Lirik lagu terakhir yang diambil, dan kunci lagu yang sedang diambilkan liriknya.
+    /// Lirik lagu terakhir yang diambil, kunci lagu yang sedang diambilkan liriknya (termasuk
+    /// yang masih menunggu dikirim), dan berapa kali server lirik error berturut-turut untuk lagu
+    /// itu.
     lyrics: Option<Lyrics>,
     lyric_pending: Option<String>,
+    lyric_failures: u32,
     /// Baris lirik yang terakhir digambar, untuk tahu kapan perlu gambar ulang.
     lyric_shown: Option<usize>,
     /// Kolom kanan Beranda: 0 = kalender, 1 = lirik (bergeser halus di antaranya).
@@ -394,8 +421,11 @@ struct App {
     messages_available: bool,
     /// Pengguna menolak izin membaca notifikasi.
     messages_denied: bool,
-    /// Pintasan Win+Alt+N terdaftar.
+    /// Pintasan Win+Alt+N dan Win+Alt+S terdaftar.
     hotkey: bool,
+    mic_hotkey: bool,
+    /// Kursor di atas tombol bisu pil: panel menunggu sampai kursor pindah dari tombol itu.
+    open_held: bool,
     /// Kursor menyentuh pil: pil sedikit membesar sebelum panel terbuka.
     peek: bool,
     /// Zona lepas yang sedang berada tepat di bawah file yang diseret.
@@ -443,6 +473,11 @@ struct App {
     /// Volume speaker (0..1, bisu) dan bisu mikrofon terakhir, untuk halaman kontrol.
     volume: Option<(f32, bool)>,
     mic: Option<bool>,
+    /// Panggilan aktif dan bisu mikrofon yang dipakainya (`None` kalau tidak ada panggilan).
+    calls: Calls,
+    call_mic: Option<bool>,
+    /// Aplikasi yang pernah memakai mikrofon, dan mana yang dihitung sebagai panggilan.
+    call_apps: CallApps,
     /// Slider yang sedang diseret.
     slider_drag: Option<Hit>,
     /// Mode senyap notch sampai waktu ini.
@@ -476,6 +511,8 @@ struct App {
     taskbar_created: u32,
     /// Pesan dari pemasang untuk keluar dengan rapi (lihat `install::stop_running`).
     quit_message: u32,
+    /// Pesan dari notch.exe yang dibuka lagi: tampilkan jendela pengaturan.
+    settings_message: u32,
     /// Sambutan pertama kali sedang ditunggu atau ditampilkan.
     welcome: bool,
     /// Langkah Administrator untuk pesan masuk sedang berjalan; kabar hasilnya hanya diterima
@@ -533,6 +570,7 @@ impl App {
             privacy_known: false,
             lyrics: None,
             lyric_pending: None,
+            lyric_failures: 0,
             lyric_shown: None,
             lyric_mix: 0.0,
             lyric_scroll: None,
@@ -550,6 +588,8 @@ impl App {
             messages_available: false,
             messages_denied: false,
             hotkey: false,
+            mic_hotkey: false,
+            open_held: false,
             peek: false,
             drop_over: None,
             share: None,
@@ -577,6 +617,9 @@ impl App {
             downloading: None,
             volume: None,
             mic: None,
+            calls: Calls::default(),
+            call_mic: None,
+            call_apps: CallApps::load(),
             slider_drag: None,
             quiet_until: None,
             city: City::load(),
@@ -597,6 +640,7 @@ impl App {
             rng: seed | 1,
             taskbar_created: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
             quit_message: unsafe { RegisterWindowMessageW(install::QUIT_MESSAGE) },
+            settings_message: unsafe { RegisterWindowMessageW(install::SETTINGS_MESSAGE) },
             welcome: !settings.welcomed,
             identity_pending: false,
         };
@@ -651,7 +695,7 @@ impl App {
             }
             WM_MOUSEACTIVATE => return Some(LRESULT(MA_NOACTIVATE as isize)),
             WM_TIMER => self.on_timer(wparam.0),
-            WM_HOTKEY => self.on_hotkey(),
+            WM_HOTKEY => self.on_hotkey(wparam.0 as i32),
             WM_INPUT => {
                 self.on_raw_input(lparam);
                 // Windows perlu membersihkan data input mentahnya sendiri.
@@ -670,6 +714,7 @@ impl App {
             WM_POWERBROADCAST => return self.on_power_broadcast(wparam, lparam),
             m if m == self.taskbar_created => self.tray.add(),
             m if m == self.quit_message => unsafe { PostQuitMessage(0) },
+            m if m == self.settings_message => settings_window::open(),
             WM_IDENTITY => self.on_identity(wparam.0),
             _ => return None,
         }
@@ -694,7 +739,17 @@ impl App {
                 return;
             }
         }
-        let hit = if self.expanded { self.hit_at(lparam) } else { None };
+        // Pil hanya punya tombol bisu panggilan. Selama kursor di atasnya panel tidak terbuka,
+        // supaya tombolnya bisa diklik; pindah dari tombol itu, panel terbuka seperti biasa.
+        let hit = if self.expanded { self.hit_at(lparam) } else { self.hit_at(lparam).filter(|hit| *hit == Hit::CallMute) };
+        if !self.expanded {
+            if hit.is_some() {
+                self.kill_timer(TIMER_OPEN);
+                self.open_held = true;
+            } else if std::mem::take(&mut self.open_held) && self.hovering {
+                self.set_timer(TIMER_OPEN, OPEN_DELAY_MS);
+            }
+        }
         self.set_hovered(hit);
     }
 
@@ -722,6 +777,10 @@ impl App {
     fn on_leave(&mut self) {
         self.tracking_leave = false;
         self.hovering = false;
+        self.open_held = false;
+        if !self.expanded {
+            self.set_hovered(None);
+        }
         if std::mem::take(&mut self.peek) {
             self.refresh();
         }
@@ -795,6 +854,10 @@ impl App {
             return;
         }
         self.kill_timer(TIMER_OPEN);
+        if !self.expanded && self.hit_at(lparam) == Some(Hit::CallMute) {
+            self.services.send(Task::ToggleCallMic { announce: false });
+            return;
+        }
         if !self.expanded {
             // Kabar pesan membuka aplikasinya, kabar unduhan menunjukkan file-nya di folder
             // (tidak dari lock screen).
@@ -861,6 +924,8 @@ impl App {
                 self.settings.save();
                 self.request_lyrics();
             }
+            Hit::LyricsRetry => self.retry_lyrics(),
+            Hit::OpenSettings => settings_window::open(),
             // Ubin mengecil dan memudar dulu; baru dibuang dari shelf setelah animasinya selesai.
             Hit::ShelfClear => {
                 let ids: Vec<u64> = self.shelf.items.iter().map(|item| item.id).collect();
@@ -910,6 +975,7 @@ impl App {
             }
             Hit::VolumeMute => self.services.send(Task::ToggleMute),
             Hit::MicToggle => self.services.send(Task::ToggleMic),
+            Hit::CallMute => self.services.send(Task::ToggleCallMic { announce: false }),
             Hit::QuietToggle => {
                 if self.quiet() {
                     self.quiet_until = None;
@@ -1513,6 +1579,8 @@ impl App {
                 self.refresh();
             }
             TIMER_WEATHER => self.fetch_weather(),
+            TIMER_CALL => self.on_call_timer(),
+            TIMER_LYRICS => self.on_lyrics_timer(),
             TIMER_WELCOME => {
                 self.kill_timer(TIMER_WELCOME);
                 if self.welcome && !self.locked {
@@ -1705,6 +1773,15 @@ impl App {
                         self.lyric_pending = None;
                     }
                     if self.settings.lyrics && self.media_key().as_ref() == Some(&found.key) {
+                        // Server lirik error: coba lagi nanti, makin lama jedanya.
+                        if found.failed {
+                            self.lyric_failures += 1;
+                            if let Some(ms) = lyrics::retry_delay_ms(self.lyric_failures) {
+                                self.set_timer(TIMER_LYRICS, ms);
+                            }
+                        } else {
+                            self.lyric_failures = 0;
+                        }
                         self.lyrics = Some(found);
                     }
                 }
@@ -1717,12 +1794,15 @@ impl App {
                     }
                 }
                 Event::Mic(muted) => self.mic = muted,
+                Event::CallMic(muted) => self.call_mic = muted,
+                Event::MicToggled(muted) => self.show_hud(Hud::Mic { muted }, MIC_HUD_MS),
                 Event::City(found) => match found {
                     Some(city) => {
                         city.save();
                         self.city = Some(city);
                         self.city_status = None;
                         self.fetch_weather();
+                        settings_window::refresh();
                     }
                     None => self.city_status = Some("Kota tidak ditemukan".to_string()),
                 },
@@ -1746,6 +1826,7 @@ impl App {
                 Event::MessagesAccess(allowed) => {
                     debug_log!("izin membaca notifikasi: {allowed}");
                     self.messages_denied = !allowed;
+                    settings_window::refresh();
                     self.services.send(Task::WatchMessages(allowed && self.settings.messages != Messages::Off));
                 }
                 Event::Message(message) => self.on_message(message),
@@ -1786,12 +1867,56 @@ impl App {
         } else {
             started(&usage.microphone, &self.privacy.microphone).map(|app| Hud::Privacy { camera: false, app })
         };
+        if self.settings.calls {
+            if self.call_apps.note(&usage.callers) {
+                self.call_apps.save();
+                settings_window::refresh();
+            }
+            self.calls.update(&self.call_apps.counted(&usage.callers), Instant::now());
+            self.schedule_call();
+        }
         self.privacy = usage;
         self.privacy_known = true;
         if let Some(hud) = hud {
             self.alert(hud, PRIVACY_HUD_MS, Sound::Privacy);
             self.set_mood(Mood::Surprised, PRIVACY_HUD_MS + MOOD_MS);
         }
+    }
+
+    /// Bangun lagi saat panggilan baru mulai tampil atau jedanya habis.
+    fn schedule_call(&self) {
+        match self.calls.next_check(Instant::now()) {
+            // Sedikit lewat dari jadwalnya, supaya saat dicek sudah benar-benar jatuh tempo.
+            Some(due) => self.set_timer(TIMER_CALL, due.as_millis().min(u32::MAX as u128) as u32 + 20),
+            None => self.kill_timer(TIMER_CALL),
+        }
+    }
+
+    fn on_call_timer(&mut self) {
+        self.kill_timer(TIMER_CALL);
+        if let Some(ended) = self.calls.finish_if_due(Instant::now()) {
+            // Di lock screen nama aplikasinya tidak ditampilkan, sama seperti di pil.
+            let app = if self.locked { String::new() } else { ended.app };
+            self.show_hud(Hud::CallEnded { app, length: call::spoken(ended.length) }, CALL_END_HUD_MS);
+        }
+        self.schedule_call();
+        self.refresh();
+    }
+
+    /// Panggilan yang sedang tampil di pil dan Beranda.
+    fn in_call(&self) -> bool {
+        self.calls.shown(Instant::now()).is_some()
+    }
+
+    fn call_view(&self) -> Option<CallView> {
+        let now = Instant::now();
+        let call = self.calls.shown(now)?;
+        Some(CallView {
+            app: if self.locked { String::new() } else { call.app.clone() },
+            clock: call::clock(now.saturating_duration_since(call.since)),
+            muted: self.call_mic.or(self.mic),
+            camera: !self.privacy.camera.is_empty(),
+        })
     }
 
     /// Pesan masuk dari aplikasi chat, disaring sesuai pengaturan. Di lock screen atau kalau
@@ -1927,25 +2052,38 @@ impl App {
         }
     }
 
-    /// Daftarkan atau lepas pintasan Win+Alt+N.
+    /// Daftarkan atau lepas pintasan Win+Alt+N dan Win+Alt+S.
     fn set_hotkey(&mut self, on: bool) {
-        if on == self.hotkey {
-            return;
+        self.hotkey = self.register_hotkey(HOTKEY_ID, b'N', self.hotkey, on);
+        self.mic_hotkey = self.register_hotkey(HOTKEY_MIC_ID, b'S', self.mic_hotkey, on);
+    }
+
+    /// Daftarkan (`on`) atau lepas pintasan Win+Alt+`key`; hasilnya: masih terdaftar atau tidak.
+    fn register_hotkey(&self, id: i32, key: u8, registered: bool, on: bool) -> bool {
+        if on == registered {
+            return registered;
         }
-        if on {
-            let modifiers = MOD_WIN | MOD_ALT | MOD_NOREPEAT;
-            match unsafe { RegisterHotKey(Some(self.hwnd), HOTKEY_ID, modifiers, u32::from(b'N')) } {
-                Ok(()) => self.hotkey = true,
-                Err(e) => debug_log!("pintasan Win+Alt+N tidak bisa dipakai: {e}"),
+        if !on {
+            let _ = unsafe { UnregisterHotKey(Some(self.hwnd), id) };
+            return false;
+        }
+        let modifiers = MOD_WIN | MOD_ALT | MOD_NOREPEAT;
+        match unsafe { RegisterHotKey(Some(self.hwnd), id, modifiers, u32::from(key)) } {
+            Ok(()) => true,
+            Err(e) => {
+                error_log!("pintasan Win+Alt+{} tidak bisa dipakai: {e}", key as char);
+                false
             }
-        } else {
-            let _ = unsafe { UnregisterHotKey(Some(self.hwnd), HOTKEY_ID) };
-            self.hotkey = false;
         }
     }
 
-    /// Win+Alt+N: buka panel, atau tutup kalau sedang terbuka.
-    fn on_hotkey(&mut self) {
+    /// Win+Alt+N: buka panel, atau tutup kalau sedang terbuka. Win+Alt+S: bisukan mikrofon
+    /// panggilan (tanpa panggilan: mikrofon default), dengan kabar singkat.
+    fn on_hotkey(&mut self, id: i32) {
+        if id == HOTKEY_MIC_ID {
+            self.services.send(Task::ToggleCallMic { announce: true });
+            return;
+        }
         if !self.shown {
             return;
         }
@@ -2003,6 +2141,7 @@ impl App {
         if command.is_some() {
             self.settings.save();
             self.update_watchers();
+            settings_window::refresh();
         }
         self.hovered = None;
         // Selama menu terbuka kursor dianggap keluar dari notch.
@@ -2108,7 +2247,8 @@ impl App {
         self.media.as_ref().map(|m| lyrics::key(&m.title, &m.artist))
     }
 
-    /// Minta lirik lagu yang sedang diputar, kalau fitur lirik aktif dan belum pernah diambil.
+    /// Cari lirik lagu yang sedang diputar, kalau fitur lirik aktif dan belum pernah dicari.
+    /// Permintaannya baru dikirim sesudah [`lyrics::WAIT_MS`], supaya durasi lagunya sudah benar.
     fn request_lyrics(&mut self) {
         if !self.settings.lyrics {
             return;
@@ -2119,9 +2259,40 @@ impl App {
         if m.title.is_empty() || known {
             return;
         }
-        self.lyric_pending = Some(key.clone());
+        self.lyric_pending = Some(key);
+        self.lyric_failures = 0;
+        self.set_timer(TIMER_LYRICS, lyrics::WAIT_MS);
+    }
+
+    /// Lagu baru sudah lengkap datanya, atau saatnya mencoba lagi lagu yang gagal karena server.
+    fn on_lyrics_timer(&mut self) {
+        self.kill_timer(TIMER_LYRICS);
+        let Some(key) = self.media_key() else { return };
+        if self.lyrics.as_ref().is_some_and(|l| l.key == key && l.failed) {
+            self.lyric_pending = Some(key.clone());
+        }
+        if self.lyric_pending.as_ref() == Some(&key) {
+            self.send_lyrics_request();
+            self.refresh();
+        }
+    }
+
+    /// Keterangan di kolom lirik diklik: cari lirik lagu ini lagi sekarang juga.
+    fn retry_lyrics(&mut self) {
+        let Some(key) = self.media_key() else { return };
+        if !self.settings.lyrics || self.lyric_pending.as_ref() == Some(&key) {
+            return;
+        }
+        self.kill_timer(TIMER_LYRICS);
+        self.lyric_pending = Some(key);
+        self.send_lyrics_request();
+        self.refresh();
+    }
+
+    fn send_lyrics_request(&mut self) {
+        let Some(m) = self.media.as_ref().filter(|m| self.settings.lyrics && !m.title.is_empty()) else { return };
         self.services.lyrics(lyrics::Request {
-            key,
+            key: lyrics::key(&m.title, &m.artist),
             title: m.title.clone(),
             artist: m.artist.clone(),
             album: m.album.clone(),
@@ -2167,9 +2338,18 @@ impl App {
         }
         let m = self.media.as_ref()?;
         let key = lyrics::key(&m.title, &m.artist);
-        let status = |text| Some(LyricsView { lines: Default::default(), scroll: 1.0, status: Some(text) });
+        let status = |text, retry| Some(LyricsView { lines: Default::default(), scroll: 1.0, status: Some(text), retry });
         let Some(lyrics) = self.lyrics.as_ref().filter(|l| l.key == key && !l.lines.is_empty()) else {
-            return if self.lyric_pending.as_ref() == Some(&key) { status("Mencari lirik…") } else { status("Lirik tidak tersedia") };
+            let failed = self.lyrics.as_ref().is_some_and(|l| l.key == key && l.failed);
+            return if self.lyric_pending.as_ref() == Some(&key) {
+                status("Mencari lirik…", false)
+            } else if failed && lyrics::retry_delay_ms(self.lyric_failures).is_some() {
+                status("Server lirik sibuk, mencoba lagi…", true)
+            } else if failed {
+                status("Server lirik sedang sibuk", true)
+            } else {
+                status("Lirik tidak tersedia", !m.title.is_empty())
+            };
         };
         let current = lyrics.current(m.position_now()).map_or(-1, |i| i as isize);
         let lines = std::array::from_fn(|k| match current + k as isize - 2 {
@@ -2179,7 +2359,7 @@ impl App {
             _ => String::new(),
         });
         let scroll = self.lyric_scroll.map_or(1.0, |start| ((self.now() - start) / LYRIC_SCROLL_SECS).min(1.0) as f32);
-        Some(LyricsView { lines, scroll, status: None })
+        Some(LyricsView { lines, scroll, status: None, retry: false })
     }
 
     fn playing(&self) -> bool {
@@ -2273,7 +2453,10 @@ impl App {
     /// Kabar terakhir memakai bentuk ringkas (juga selama sedang memudar keluar).
     fn compact_hud(&self) -> bool {
         self.settings.compact_hud
-            && matches!(self.hud, Some(Hud::Volume { .. } | Hud::Brightness { .. } | Hud::LockKey { .. } | Hud::Power { .. }))
+            && matches!(
+                self.hud,
+                Some(Hud::Volume { .. } | Hud::Brightness { .. } | Hud::LockKey { .. } | Hud::Power { .. } | Hud::Mic { .. })
+            )
     }
 
     fn set_expanded(&mut self, expanded: bool) {
@@ -2304,8 +2487,9 @@ impl App {
 
     fn wanted_view(&self) -> View {
         // Garis tipis saat jendela aktif di-maximize, juga selama kamera/mikrofon dipakai (titik
-        // privasinya ikut tampil di ujung garis). Garis yang disentuh kursor kembali jadi pil dulu.
-        let slim = self.mode == Mode::Maximized && !self.locked && !self.peek;
+        // privasinya ikut tampil di ujung garis). Garis yang disentuh kursor kembali jadi pil dulu,
+        // dan pil tetap utuh kalau sakelar "Tetap tampil saat jendela penuh" menyala.
+        let slim = self.mode == Mode::Maximized && !self.settings.keep_pill && !self.locked && !self.peek;
         if self.expanded {
             // Beranda lebar dengan kalender (tidak di lock screen: agenda itu pribadi), atau
             // dengan kolom lirik di samping pemutar.
@@ -2409,16 +2593,21 @@ impl App {
         let focusing = self.focus.running();
         let timing = self.timer.running();
         let last_minute = self.timer.remaining(Instant::now()) < Duration::from_secs(60);
+        let calling = self.in_call();
         let interval = match self.view {
             _ if !self.shown => None,
             v if v.is_panel() && self.page == Page::Shelf && self.shelf.drop_hover => Some(DASH_MS),
             View::Pill | View::LyricPill if playing => Some(WAVE_MS),
+            // Lama panggilan dihitung per detik; lebih rapat supaya angkanya tidak meloncat.
+            View::Pill if calling => Some(FOCUS_TICK_MS),
             // Di menit terakhir pil menghitung detik.
             View::Pill if timing => Some(if last_minute { PROGRESS_MS } else { PILL_FOCUS_MS }),
             View::Pill if focusing => Some(PILL_FOCUS_MS),
             v if v.is_panel() && self.page == Page::Timer && timing => Some(FOCUS_TICK_MS),
-            // Gelombang di kepala pemutar; detik lagu dan baris lirik diperiksa sekalian.
+            // Gelombang di kepala pemutar; detik lagu, baris lirik, dan lama panggilan diperiksa
+            // sekalian.
             v if v.is_panel() && self.page == Page::Home && playing => Some(WAVE_MS),
+            v if v.is_panel() && self.page == Page::Home && calling => Some(FOCUS_TICK_MS),
             v if v.is_panel() && self.page == Page::Focus && focusing => Some(FOCUS_TICK_MS),
             _ => None,
         };
@@ -2436,8 +2625,10 @@ impl App {
     fn eyes_visible(&self) -> bool {
         self.shown
             && match self.view {
-                View::Pill => !self.playing() && !self.focus.running() && !self.timer.running(),
-                View::Panel | View::PanelWide => self.page == Page::Home && self.media.is_none() && self.page_anim.is_none(),
+                View::Pill => !self.playing() && !self.focus.running() && !self.timer.running() && !self.in_call(),
+                View::Panel | View::PanelWide => {
+                    self.page == Page::Home && self.media.is_none() && !self.in_call() && self.page_anim.is_none()
+                }
                 _ => false,
             }
     }
@@ -2759,6 +2950,7 @@ impl App {
         let weather = self.weather_text();
         let calendar = self.calendar_view();
         let download = self.download_text();
+        let call = self.call_view();
         let lyric = self.lyric_line();
         let now = self.now();
         let roll = self.hud_roll.as_ref().map(|(from, start, up)| Roll {
@@ -2819,6 +3011,7 @@ impl App {
             calendar: calendar.as_ref(),
             agenda_draft: self.agenda.draft.as_deref(),
             download: download.as_deref(),
+            call: call.as_ref(),
             welcome: self.welcome && self.expanded && !self.locked,
         };
         let result = self.renderer.draw(&scene).and_then(|_| self.renderer.present(self.hwnd, self.window_pos(), None));
@@ -2926,13 +3119,21 @@ impl App {
             settings: self.settings,
             messages_available: self.messages_available,
             messages_denied: self.messages_denied,
-            hotkey_taken: self.settings.hotkey && !self.hotkey,
+            hotkey_taken: self.settings.hotkey && !(self.hotkey && self.mic_hotkey),
             can_activate: install::is_installed_copy(),
+            city: self.city.as_ref().map(|city| city.name.clone()),
+            call_apps: self.call_apps.list().to_vec(),
         }
     }
 
     fn on_command(&mut self, command: Command) {
+        self.run_command(command);
+        settings_window::refresh();
+    }
+
+    fn run_command(&mut self, command: Command) {
         match command {
+            Command::OpenSettings => settings_window::open(),
             Command::ToggleVisible => {
                 self.user_hidden = !self.user_hidden;
                 self.apply_visibility();
@@ -2951,6 +3152,7 @@ impl App {
                 } else {
                     self.lyrics = None;
                     self.lyric_pending = None;
+                    self.kill_timer(TIMER_LYRICS);
                 }
                 self.refresh();
             }
@@ -3026,6 +3228,34 @@ impl App {
                 self.settings.compact_hud = !self.settings.compact_hud;
                 self.settings.save();
             }
+            Command::ToggleKeepPill => {
+                self.settings.keep_pill = !self.settings.keep_pill;
+                self.settings.save();
+                self.refresh();
+            }
+            Command::ToggleCalls => {
+                self.settings.calls = !self.settings.calls;
+                self.settings.save();
+                if self.settings.calls {
+                    self.calls.update(&self.call_apps.counted(&self.privacy.callers), Instant::now());
+                } else {
+                    self.calls.clear();
+                }
+                self.schedule_call();
+                self.refresh();
+            }
+            Command::ToggleCallApp(index) => {
+                // Aplikasi yang baru diabaikan langsung hilang dari pil, tanpa kabar selesai.
+                if let Some((app, false)) = self.call_apps.toggle(index) {
+                    self.calls.forget(&app);
+                }
+                self.call_apps.save();
+                if self.settings.calls {
+                    self.calls.update(&self.call_apps.counted(&self.privacy.callers), Instant::now());
+                    self.schedule_call();
+                }
+                self.refresh();
+            }
             Command::ToggleBrowserMessages => {
                 self.settings.browser_messages = !self.settings.browser_messages;
                 self.settings.save();
@@ -3034,6 +3264,18 @@ impl App {
                 self.settings.screenshots = !self.settings.screenshots;
                 self.settings.save();
                 self.update_watchers();
+            }
+            Command::MovePage(page, delta) => {
+                self.settings.pages.move_by(page, delta);
+                self.settings.save();
+                self.refresh();
+            }
+            Command::EditCity => {
+                self.page = Page::Controls;
+                self.page_anim = None;
+                self.set_expanded(true);
+                self.begin_edit(Field::City);
+                self.refresh();
             }
             Command::TogglePage(page) => {
                 let shown = !self.settings.pages.shown(page);
@@ -3215,8 +3457,9 @@ fn hud_level(hud: &Hud) -> Option<f32> {
 }
 
 /// Kabar yang tetap muncul (dan berbunyi) walau notch sedang senyap.
+/// Kabar yang tetap muncul saat senyap; kabar mikrofon adalah jawaban atas Win+Alt+S.
 fn urgent(hud: &Hud) -> bool {
-    matches!(hud, Hud::Power { low: true, .. } | Hud::Timer { .. })
+    matches!(hud, Hud::Power { low: true, .. } | Hud::Timer { .. } | Hud::Mic { .. })
 }
 
 /// DPI gambar notch: DPI layar dikali pilihan ukuran.

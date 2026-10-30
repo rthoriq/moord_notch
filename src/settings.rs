@@ -133,12 +133,17 @@ pub struct Settings {
     pub hotkey: bool,
     /// Mode rapat: selama kamera/mikrofon dipakai, isi pesan disembunyikan dan notch tidak berbunyi.
     pub meeting: bool,
+    /// Panggilan aktif: lama panggilan dan tombol bisu di pil selama mikrofon dipakai.
+    pub calls: bool,
     /// Cuaca dari Open-Meteo (memakai internet). Mati secara default.
     pub weather: bool,
     /// Kabar volume, kecerahan, Caps Lock, dan charger ringkas ala Dynamic Island.
     pub compact_hud: bool,
     /// Beranda lebar dengan kalender dan agenda di kanannya.
     pub calendar: bool,
+    /// Pil tetap utuh saat jendela di-maximize, tidak mengecil jadi garis tipis. Full-screen
+    /// sungguhan (video, game, presentasi) tetap menyembunyikan notch.
+    pub keep_pill: bool,
     /// Kolom lirik di samping pemutar musik (tombol lirik di panel). Hanya berlaku kalau
     /// `lyrics` aktif.
     pub lyric_panel: bool,
@@ -167,9 +172,11 @@ impl Default for Settings {
             screenshots: true,
             hotkey: true,
             meeting: true,
+            calls: true,
             weather: false,
             compact_hud: true,
             calendar: true,
+            keep_pill: false,
             lyric_panel: false,
             messages: Messages::default(),
             hide_content: false,
@@ -213,9 +220,11 @@ impl Settings {
                 "screenshot-ke-shelf" => settings.screenshots = yes,
                 "pintasan" => settings.hotkey = yes,
                 "mode-rapat" => settings.meeting = yes,
+                "panggilan" => settings.calls = yes,
                 "cuaca" => settings.weather = yes,
                 "kabar-ringkas" => settings.compact_hud = yes,
                 "kalender" => settings.calendar = yes,
+                "tetap-tampil" => settings.keep_pill = yes,
                 "panel-lirik" => settings.lyric_panel = yes,
                 "sambutan" => settings.welcomed = yes,
                 "halaman" => settings.pages = Pages::parse(value),
@@ -254,9 +263,11 @@ impl Settings {
             format!("screenshot-ke-shelf={}", yes(self.screenshots)),
             format!("pintasan={}", yes(self.hotkey)),
             format!("mode-rapat={}", yes(self.meeting)),
+            format!("panggilan={}", yes(self.calls)),
             format!("cuaca={}", yes(self.weather)),
             format!("kabar-ringkas={}", yes(self.compact_hud)),
             format!("kalender={}", yes(self.calendar)),
+            format!("tetap-tampil={}", yes(self.keep_pill)),
             format!("panel-lirik={}", yes(self.lyric_panel)),
             format!("pesan={}", self.messages.key()),
             format!("sembunyikan-isi={}", yes(self.hide_content)),
@@ -287,9 +298,11 @@ mod tests {
             screenshots: false,
             hotkey: false,
             meeting: false,
+            calls: false,
             weather: true,
             compact_hud: false,
             calendar: false,
+            keep_pill: true,
             lyric_panel: true,
             messages: Messages::AllChat,
             hide_content: true,

@@ -177,11 +177,15 @@ pub fn remove_certificates() -> Result<()> {
     }
 }
 
-/// Logo yang dirujuk manifest ditaruh di folder pemasangan (dibaca Windows dari sana).
+/// Logo yang dirujuk manifest ditaruh di folder pemasangan: Windows membacanya dari sana untuk
+/// taskbar dan Pengaturan, bukan dari dalam paket. File yang sudah sama tidak ditulis ulang.
 pub fn write_assets(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir.join("assets"))?;
     for (name, bytes) in ASSETS {
-        std::fs::write(dir.join("assets").join(name), bytes)?;
+        let path = dir.join("assets").join(name);
+        if std::fs::read(&path).ok().as_deref() != Some(bytes) {
+            std::fs::write(path, bytes)?;
+        }
     }
     Ok(())
 }

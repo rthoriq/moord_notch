@@ -37,6 +37,10 @@ pub enum Event {
     Volume { level: f32, muted: bool, initial: bool },
     /// Mikrofon default dibisukan (`Some(true)`), atau `None` kalau tidak ada mikrofon.
     Mic(Option<bool>),
+    /// Mikrofon yang dipakai aplikasi panggilan dibisukan; `None` kalau tidak ada panggilan.
+    CallMic(Option<bool>),
+    /// Hasil Win+Alt+S: mikrofon sekarang dibisukan (`true`) atau menyala.
+    MicToggled(bool),
     Bluetooth(bluetooth::Notice),
     BluetoothBattery { id: String, battery: u8 },
     Thumbnail(thumbnail::Thumbnail),
@@ -76,6 +80,11 @@ pub enum Task {
     SetVolume(f32),
     ToggleMute,
     ToggleMic,
+    /// Bisu/aktifkan mikrofon panggilan (tanpa panggilan: mikrofon default); `announce` =
+    /// hasilnya dikabarkan lewat [`Event::MicToggled`].
+    ToggleCallMic { announce: bool },
+    /// Bisu salah satu mikrofon panggilan berubah.
+    CallMicChanged,
     SetBrightness(u8),
     Quit,
 }
@@ -221,6 +230,9 @@ fn run(tasks: Sender<Task>, rx: Receiver<Task>, notify: Notifier) {
                     privacy_due = None;
                     if let Some(monitor) = &mut privacy {
                         monitor.rescan();
+                        if let Some(audio) = &mut audio {
+                            audio.watch_call(monitor.call_devices());
+                        }
                     }
                 }
             }
@@ -280,6 +292,18 @@ fn run(tasks: Sender<Task>, rx: Receiver<Task>, notify: Notifier) {
             Some(Task::ToggleMic) => {
                 if let Some(monitor) = &audio {
                     monitor.toggle_mic();
+                }
+            }
+            Some(Task::ToggleCallMic { announce }) => {
+                if let Some(muted) = audio.as_ref().and_then(|monitor| monitor.toggle_call_mic())
+                    && announce
+                {
+                    notify.send(Event::MicToggled(muted));
+                }
+            }
+            Some(Task::CallMicChanged) => {
+                if let Some(monitor) = &mut audio {
+                    monitor.report_call();
                 }
             }
             Some(Task::SetBrightness(percent)) => {
