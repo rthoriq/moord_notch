@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 pub const PRESETS: [u32; 4] = [1, 5, 10, 15];
 /// Batas durasi; tombol "+1 mnt" berhenti di sini.
 const MAX: Duration = Duration::from_secs(99 * 60);
+/// Sisa waktu yang dianggap detik-detik terakhir: cincin dan angkanya memerah.
+const ENDING: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub struct Timer {
@@ -68,6 +70,12 @@ impl Timer {
         }
     }
 
+    /// Tinggal detik-detik terakhir (berjalan maupun dijeda). Sama dengan jam yang menunjukkan
+    /// 00:10 ke bawah, karena jamnya dibulatkan ke atas.
+    pub fn ending(&self, now: Instant) -> bool {
+        self.active() && self.remaining(now) <= ENDING
+    }
+
     /// Bagian yang sudah lewat, 0..1.
     pub fn progress(&self, now: Instant) -> f32 {
         if self.total.is_zero() || !self.active() {
@@ -109,6 +117,8 @@ mod tests {
         timer.start(5, t0);
         assert_eq!(timer.remaining(t0 + Duration::from_secs(60)), Duration::from_secs(240));
         assert!((timer.progress(t0 + Duration::from_secs(150)) - 0.5).abs() < 0.01);
+        assert!(!timer.ending(t0 + Duration::from_millis(289_900)));
+        assert!(timer.ending(t0 + Duration::from_secs(290)));
 
         timer.toggle_pause(t0 + Duration::from_secs(60));
         assert!(!timer.running() && timer.active());

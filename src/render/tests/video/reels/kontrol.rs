@@ -46,6 +46,7 @@ fn controls(studio: &mut Studio, cast: &Cast, t: f64, len: f64) {
         mic: Some(t >= MIC),
         quiet_minutes: (t >= QUIET).then_some(60),
         city: Some("Kota: Jakarta".into()),
+        fx: ControlsFx::default(),
     };
     let mut scene = cast.scene(View::Panel, Page::Controls, false);
     scene.controls = &view;

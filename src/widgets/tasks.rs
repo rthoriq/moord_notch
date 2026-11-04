@@ -82,6 +82,11 @@ impl Tasks {
         self.items.iter().filter(|t| !t.done).count()
     }
 
+    /// Bagian tugas yang sudah selesai, 0..1 (0 kalau daftarnya kosong).
+    pub fn done_share(&self) -> f32 {
+        if self.items.is_empty() { 0.0 } else { (self.items.len() - self.remaining()) as f32 / self.items.len() as f32 }
+    }
+
     pub fn has_done(&self) -> bool {
         self.items.iter().any(|t| t.done)
     }

@@ -359,3 +359,297 @@ Google Meet di browser, dan lainnya), notch menganggapnya sedang dalam panggilan
   notch tidak mengecil jadi garis tipis saat jendela di-maximize, jadi jam, musik, lirik, dan
   panggilan tetap terlihat. Bawaannya mati. Full-screen sungguhan (video, game, presentasi)
   tetap menyembunyikan notch.
+
+## Tahap 13: jadwal sholat
+
+Halaman baru **Sholat** di panel, memakai kota yang sama dengan cuaca.
+
+- **Dihitung sendiri, tanpa internet**: jadwal dihitung dari koordinat kota dengan kriteria
+  Kemenag RI: Subuh 20°, Isya 18°, Ashar satu kali panjang bayangan, ihtiyat 2 menit, dan Imsak
+  10 menit sebelum Subuh. Dicocokkan dengan jadwal Kemenag untuk Jakarta, Makassar, Palopo, dan
+  Medan di 14 tanggal: 81 dari 84 waktu sama persis, sisanya selisih 1 menit.
+- **Isi halaman**: waktu sholat berikutnya dalam angka besar, "Ashar · 55 menit lagi", cincin
+  yang terisi sejak sholat sebelumnya, nama kota, waktu sholat yang sedang berjalan, dan tanggal
+  Hijriah di kepala halaman. Di bawahnya baris Imsak, Subuh, Terbit, Dzuhur, Ashar, Maghrib, dan
+  Isya; yang berikutnya disorot, yang sudah lewat diredupkan. Sesudah Isya, halaman menampilkan
+  jadwal besok dan menunggu "Subuh besok".
+- **Tanggal Hijriah** diambil dari kalender Umm al-Qura bawaan Windows, jadi bisa berbeda sehari
+  dengan hasil sidang isbat.
+- **Kabar "Waktunya sholat Ashar"** muncul 10 detik dengan bunyi pengingat Windows saat masuk
+  Subuh, Dzuhur, Ashar, Maghrib, dan Isya (Imsak dan Terbit tidak). Saat mode rapat kabarnya
+  tampil tanpa bunyi; saat senyap, seperti pengingat lain, kabarnya tidak muncul. Tanpa suara
+  adzan.
+- **Hitung mundur di pil** (opsional, bawaannya mati): 10 menit sebelum waktu sholat, pil
+  menampilkan bulan sabit di kiri dan sisa menit di kanan, selama tidak ada musik, timer,
+  pomodoro, atau unduhan yang sedang tampil.
+- **Pengaturan → Sholat**: kota, sakelar pengingat, sakelar hitung mundur, dan koreksi −3 sampai
+  +3 menit untuk tiap waktu sholat, supaya sama dengan jadwal masjid terdekat.
+- **Belum ada kota**: halaman meminta "Pilih kota dulu". Tombolnya membuka kolom kota di Kontrol
+  cepat. Nama kota dicari sekali lewat Open-Meteo, walau cuaca dimatikan; status "Mencari kota…"
+  dan "Kota tidak ditemukan" sekarang tetap terlihat di Kontrol cepat dalam keadaan itu.
+- Menyembunyikan halaman Sholat (klik kanan panel) ikut mematikan pengingatnya.
+- `cargo test preview_states` menggambar halaman, pil, dan kabarnya ke `target/preview/`
+  (`page_prayer*`, `pill_prayer*`, `hud_prayer`).
+
+## Tahap 14: nuansa halaman, percontohan Minum air
+
+Tiap halaman akan punya animasi masuk dan suasananya sendiri. Halaman pertama yang dibuat
+adalah Minum air.
+
+- **Gelas menggantikan cincin**: gelas bening yang sedikit mengerucut ke bawah, terisi sesuai
+  persen target hari ini, dengan garis takaran tiap seperempat target dan persen di bawahnya.
+  Air lebih terang di permukaan dan lebih pekat di dasar.
+- **Kran dan aliran air**: klik "+ Minum 250 ml", kran turun dari pipa di tepi kanan panel, air
+  mengalir sekitar 0,7 detik, permukaan naik sambil beriak dari titik jatuhnya, lalu kran
+  pergi dan airnya tenang. "Batal" membuat air turun pelan tanpa kran. Tuangan yang mencapai
+  target ditutup beberapa gelembung yang naik.
+- **Animasi masuk halaman**: halaman masih bergeser seperti biasa, tetapi gelasnya mulai kosong
+  lalu terisi ke jumlah hari ini, dan airnya bergoyang seperti gelas yang baru diletakkan. Ini
+  juga berlaku saat panel dibuka langsung di halaman Minum air. Kerangkanya umum
+  (`render::enter_secs`), jadi halaman lain tinggal menambahkan animasinya sendiri.
+- **Pendaran biru** dari bawah panel di halaman Minum air, seperti oranye di Timer, makin terang
+  mendekati target.
+- **Hemat**: air hanya bergerak saat dituang, saat halaman dibuka, dan 1 sampai 2,4 detik
+  sesudahnya. Selebihnya panel diam dan tidak digambar ulang.
+- **Ikut setelan Windows "Efek animasi"** (Aksesibilitas → Efek visual): kalau dimatikan, gelas
+  langsung menunjukkan jumlah akhir tanpa kran, riak, atau animasi masuk.
+- Reel promosi Minum air ikut memakai kran yang sama.
+- `cargo test preview_states` menggambar urutan tuangan ke `target/preview/`
+  (`page_water_enter`, `page_water_pour_tap`, `page_water_pour`, `page_water_pour_settle`,
+  `page_water_goal`, `page_water_undo`, `page_water_empty`, `page_water_full`,
+  `page_water_light`, `page_water_glass`).
+
+### Nuansa halaman Sholat
+
+- **Langit ikut waktu**: cincin, sorotan jadwal, dan pendaran dari bawah panel berganti warna
+  sesuai waktu yang sedang berjalan: ungu fajar (Subuh sampai terbit), keemasan (pagi), biru
+  langit (Dzuhur), jingga (Ashar), merah senja (Maghrib), dan biru malam (Isya sampai Subuh).
+  Pendaran pagi dibuat lebih tipis karena kuning paling menyala.
+- **Ikon cincin**: matahari dari terbit sampai Maghrib, bulan sabit di malam hari dan Subuh.
+  Ikon di kepala halaman tetap bulan sabit.
+- **Bintang** kecil di sela teks bagian atas panel mulai Isya sampai Subuh. Di tema terang
+  warnanya biru malam supaya tetap terlihat.
+- **Animasi masuk** sekitar 1 detik: cincin menyapu dari kosong, sorotan jadwal bergeser dari
+  waktu sebelumnya ke waktu berikutnya, langit memudar masuk, dan bintang berkelip satu per
+  satu lalu diam. Ikut setelan "Efek animasi" Windows seperti Minum air.
+- Kabar "Waktunya sholat" dan hitung mundur di pil tetap berwarna teal.
+- Pratinjau baru: `page_prayer_dawn`, `page_prayer_morning`, `page_prayer_afternoon`,
+  `page_prayer_dusk`, `page_prayer_night_light`, `page_prayer_enter`, `page_prayer_enter_night`.
+
+### Nuansa halaman Pomodoro
+
+Nuansanya diambil dari timer dapur berbentuk tomat, asal nama Pomodoro.
+
+- **Cincin jadi tomat**: di puncak cincin ada tangkai dan dua helai daun hijau. Cincinnya tetap
+  merah saat fokus dan hijau saat istirahat.
+- **Tomat untuk sesi hari ini**: tulisan "2 sesi hari ini" di kepala halaman diganti satu tomat
+  kecil untuk tiap sesi fokus yang selesai. Lebih dari 8 sesi ditulis "+N".
+- **Diputar seperti timer dapur**: saat Mulai diklik dari awal, cincin naik penuh lalu kembali,
+  dan daunnya bergoyang. Melanjutkan dari jeda tidak memakai animasi ini.
+- **Sesi selesai saat panel terbuka di Pomodoro**: cincin berkilau sekali, dan selesai fokus
+  menjatuhkan tomat baru ke deretan dengan pantulan kecil. Kabar "Pomodoro selesai" memang
+  tidak tampil selama panel terbuka, jadi halamannya sendiri yang bereaksi. Bunyinya tetap.
+- **Animasi masuk** sekitar 1 detik: cincin menyapu dari kosong, tomat sesi muncul satu per
+  satu, dan daunnya bergoyang. Ikut setelan "Efek animasi" Windows.
+- Pratinjau baru: `page_focus_break`, `page_focus_paused`, `page_focus_fresh`,
+  `page_focus_many`, `page_focus_light`, `page_focus_wind`, `page_focus_done`,
+  `page_focus_done_landed`, `page_focus_enter`.
+
+### Nuansa halaman Sistem
+
+Temanya "mesin yang hidup".
+
+- **Pendaran mengikuti beban**: teal tenang selama CPU, GPU, dan RAM di bawah 75%; oranye mulai
+  75% atau suhu GPU 78 °C; merah mulai 90% atau suhu GPU 87 °C. Disk tidak dihitung karena
+  disk penuh bukan beban. Warnanya hanya berubah saat data baru masuk.
+- **Riwayat CPU 30 detik**: grafik garis kecil di bawah tulisan CPU, yang terbaru di kanan.
+  Grafiknya mulai dari kosong tiap kali halaman dibuka, karena CPU hanya diukur selama halaman
+  ini terbuka dan data lama tidak boleh tersambung ke data baru.
+- **Titik "langsung"** hijau di samping "Menyala 3 j 12 m", berganti terang dan redup tiap data
+  baru tiba. Tidak ada frame tambahan karena halaman ini memang digambar ulang tiap detik.
+- **Memindai sambil menunggu**: angka lama dari kunjungan sebelumnya tidak ditampilkan lagi.
+  Sampai data pertama tiba (sekitar 1 detik), tiap cincin memutar busur pendek. Busur berhenti
+  sendiri paling lama setelah 3 detik kalau datanya tidak pernah datang.
+- **Animasi masuk** saat data pertama tiba: keempat cincin menyapu bergantian dari kiri dan
+  persennya menghitung naik dari 0. Rencana awal grafik CPU "tergambar dari kiri" tidak dipakai,
+  karena grafiknya memang tumbuh dari kanan tiap detik.
+- Cincin tidak dianimasikan tiap pembaruan, supaya halaman yang mengukur CPU tidak ikut
+  membebani CPU. Semua animasi ikut setelan "Efek animasi" Windows.
+- Pratinjau baru: `page_system_busy`, `page_system_hot`, `page_system_scan`,
+  `page_system_young`, `page_system_light`, `page_system_enter`.
+
+### Nuansa halaman Timer
+
+Temanya jam pasir.
+
+- **Jam pasir di sisi kanan**: pasir di atas adalah sisa waktu, yang di bawah sudah lewat.
+  Selama berjalan ada aliran tipis di lehernya dan permukaan atasnya sedikit mencekung; saat
+  dijeda alirannya berhenti. Pasir bergeser bersama angkanya tiap setengah detik, jadi tidak ada
+  frame tambahan.
+- **Dibalik saat mulai**: memilih durasi memutar jam pasir setengah lingkaran, lalu pasirnya
+  turun ke leher dan mulai mengalir. Saat timer tidak dipakai, semua pasir ada di bawah seperti
+  jam pasir yang sudah selesai. Rencana awal "pasir penuh di atas" diubah, karena pasir yang
+  sudah di atas akan pindah ke bawah kalau dibalik.
+- **"+1 mnt"** menjatuhkan beberapa butir ke bagian atas sambil pasirnya bertambah, dan cincin
+  mundur pelan ke kemajuan yang baru.
+- **10 detik terakhir**: cincin, angka, dan pendaran berubah dari oranye ke merah.
+- **Waktu habis saat panel terbuka di Timer**: jam pasir bergoyang seperti alarm berdering,
+  cincin penuh merah memudar sambil berkilau, dan tulisan "Waktu habis, Timer 5 menit selesai"
+  tampil sebentar sebelum berganti ke "Pilih durasi". Bunyi alarmnya tetap.
+- **Animasi masuk** sekitar 1 detik: cincin menyapu ke kemajuannya dan pasir mengalir dari atas
+  ke tempatnya. Ikut setelan "Efek animasi" Windows.
+- Petunjuk "Ada kabar dan bunyi alarm saat waktunya habis" dipendekkan menjadi "Kabar dan alarm
+  saat waktu habis" supaya tidak menabrak jam pasir.
+- Reel promosi Timer ikut memakai pembalikan dan butir "+1 mnt".
+- Pratinjau baru: `page_timer_paused`, `page_timer_ending`, `page_timer_light`,
+  `page_timer_light_idle`, `page_timer_flip`, `page_timer_flip_settle`, `page_timer_add`,
+  `page_timer_done`, `page_timer_done_late`, `page_timer_enter`, `page_timer_enter_idle`.
+
+### Nuansa halaman Tugas
+
+Temanya daftar centang yang memuaskan.
+
+- **Centang yang tergambar**: saat dicentang, lingkaran terisi dengan sedikit "pop", tanda
+  centangnya tergambar seperti ditulis tangan, lalu garis coret menyapu teks dari kiri ke kanan.
+  Sesudah itu barisnya meluncur ke kelompok yang selesai, terangkat seperti kartu supaya tidak
+  menimpa teks baris lain. Membatalkan centang adalah kebalikannya. Tanda centang kini digambar
+  sebagai garis, bukan ikon huruf, supaya sama persis saat diam dan saat beranimasi.
+- **Kemajuan hari ini**: cincin hijau kecil di samping "3 tersisa" terisi sesuai bagian tugas
+  yang selesai, dan pendaran hijau dari bawah panel makin terang makin banyak yang selesai.
+- **Semua selesai**: saat tugas terakhir dicentang, konfeti meletup dari centangnya dan tulisan
+  "Semua selesai" berkilau hijau sekali.
+- **Tambah dan hapus yang halus**: tugas baru menunggu celahnya terbuka dulu, lalu naik ke
+  barisnya sambil muncul (dari kotak tambah kalau ia baris terakhir). Tugas yang dihapus dengan ×
+  memudar sambil bergeser ke kanan, lalu baris di bawahnya naik menutup celah. "Hapus selesai"
+  menyapu tugas-tugas yang selesai keluar bergantian.
+- **Animasi masuk** sekitar 0,8 detik: baris muncul bergantian dari atas, centang tugas yang
+  sudah selesai tergambar ulang, dan cincin kemajuannya terisi. Ikut setelan "Efek animasi"
+  Windows.
+- Area klik selalu berada di tempat akhir baris, walau barisnya masih meluncur.
+- Pratinjau baru: `page_tasks_check`, `page_tasks_check_slide`, `page_tasks_all_done`,
+  `page_tasks_all_done_settled`, `page_tasks_add`, `page_tasks_remove`, `page_tasks_clear`,
+  `page_tasks_enter`, `page_tasks_mixed`, `page_tasks_light`.
+
+### Nuansa halaman Shelf
+
+Temanya rak tempat file diletakkan.
+
+- **Rak**: ubin kini berdiri di atas papan rak tipis, dengan bayangan kecil di bawah tiap ubin.
+  Gambar pratinjau dan ikon file berdiri di papannya, namanya tertulis di bawah papan.
+- **Jatuh ke rak**: file yang dilepas ke notch (juga tangkapan layar yang masuk shelf) jatuh dari
+  atas ke raknya dengan pantulan kecil, dan bayangannya melebar saat mendarat. Beberapa file
+  jatuh bergantian. Ini menggantikan animasi "membesar" yang lama.
+- **Merapat, bukan melompat**: ubin yang dihapus dengan × terangkat sambil memudar, lalu ubin di
+  kanannya meluncur menutup celah. "Bersihkan" mengangkat ubin satu per satu dari kiri. Menggulir
+  dengan roda mouse, dan shelf penuh yang bergeser saat file baru masuk, juga meluncur halus.
+  File yang ternyata sudah tidak ada ikut terangkat, tidak lagi hilang mendadak.
+- **Lencana jenis file**: file tanpa pratinjau gambar diberi lencana kecil berisi ekstensinya:
+  PDF merah, DOC biru, XLS hijau, PPT jingga, ZIP oranye, audio merah muda, lainnya abu-abu.
+  Folder, gambar, dan video tidak diberi lencana.
+- **Pendaran saat menyeret**: selama file diseret di atas notch, ada pendaran biru dari bawah
+  panel, lebih terang tepat di atas zona lepas, lalu memudar setelah file dilepas.
+- **Animasi masuk** sekitar 0,8 detik: ubin diletakkan ke rak bergantian dari kiri, dan ikon
+  shelf kosong mengangguk sekali. Semuanya ikut setelan "Efek animasi" Windows; tanpa efek
+  animasi, ubin langsung muncul dan langsung hilang.
+- Area klik selalu berada di tempat akhir ubin, walau ubinnya masih meluncur.
+- Pratinjau baru: `page_shelf_drop_fall`, `page_shelf_drop_bounce`, `page_shelf_lift`,
+  `page_shelf_slide`, `page_shelf_kinds`, `page_shelf_light`, `page_shelf_enter`,
+  `page_shelf_empty_enter`.
+
+### Nuansa halaman Beranda
+
+Temanya "hari ini".
+
+- **Pendaran waktu hari**: tanpa musik, bagian bawah panel berpendar lembut mengikuti sapaannya:
+  pagi keemasan, siang biru langit, sore jingga, malam nila. Saat musik diputar, warnanya tetap
+  dari sampul lagu.
+- **Angka jam bergulir**: saat menit berganti selagi Beranda terbuka, hanya angka yang berubah
+  yang bergulir naik, bergantian dari kanan (misal 19:59 → 20:00). Tanggal ikut bergulir saat
+  tengah malam. Jam di kepala pemutar juga ikut.
+- **Kalender meluncur**: lingkaran pilihan kini diam di tengah, dan deretan hari meluncur di
+  bawahnya saat hari lain diklik atau digulir dengan roda mouse; hari di tepi memudar. Agenda hari
+  sebelumnya bergeser keluar lalu agenda hari terpilih masuk dari arah geserannya. Bulan dan
+  tahun ikut bergulir kalau peralihannya melewati batas bulan.
+- **Agenda yang memuaskan**: mencentang agenda memakai centang tergambar seperti di Tugas
+  (lingkaran terisi, centang tergambar, lalu coretan menyapu teksnya), dan maskot tersenyum
+  sebentar. Agenda baru naik ke barisnya (dari kotak tambah kalau ia di baris terbawah), dan
+  daftarnya digulir supaya agenda baru itu terlihat. Agenda yang dihapus memudar ke kanan, lalu
+  sisanya naik menutup celah.
+- **Agenda terdekat**: agenda hari ini yang belum selesai dan mulai kurang dari sejam lagi
+  menampilkan hitung mundur berwarna aksen, misal "15 mnt lagi", atau "Sekarang" tepat pada
+  menitnya. Diperbarui tiap menit bersama jam, jadi tidak ada frame tambahan.
+- **Ganti lagu**: sampul lama memudar sementara sampul baru masuk sambil membesar sedikit. Judul
+  dan artis lama keluar, yang baru masuk dari kanan (dari kiri setelah ⏮), dan bar progres
+  meluncur ke posisi lagu baru.
+- **Animasi masuk** sekitar 0,8 detik: sapaan, jam, dan tanggal naik bergantian (begitu juga kartu
+  panggilan); hari-hari kalender muncul bergantian dari kiri dan lingkaran hari ini membesar, lalu
+  agenda menyusul. Dengan musik, sampul membesar masuk, judul dan artis naik, dan bar progres
+  menyapu ke posisinya. Kembali ke Beranda dari halaman lain membuat maskot berkedip. Semuanya
+  ikut setelan "Efek animasi" Windows.
+- Area klik hari dan agenda selalu berada di tempat akhirnya, walau masih meluncur.
+- Tanda centang agenda kini digambar sebagai garis seperti di Tugas, bukan ikon huruf.
+- Pratinjau baru: `home_glow_morning`, `home_glow_noon`, `home_glow_evening`, `home_glow_light`,
+  `home_clock_roll`, `home_clock_roll_late`, `home_clock_midnight`, `home_clock_roll_player`,
+  `home_calendar_slide`, `home_calendar_month`, `home_agenda_check`, `home_agenda_add`,
+  `home_agenda_remove`, `home_agenda_soon`, `home_track_change`, `home_track_late`, `home_enter`,
+  `home_enter_late`, `home_enter_media`.
+
+### Nuansa halaman Kontrol
+
+Temanya meja mixer kecil. Ini halaman terakhir Tahap 14: kini semua halaman punya suasananya
+sendiri.
+
+- **Slider meluncur**: nilai yang berubah karena klik di jalur, roda mouse, tombol volume
+  keyboard, atau tombol kecerahan meluncur ke nilai barunya (sekitar 0,2 detik) dan angkanya
+  bergulir, seperti kabar volume. Selama diseret, bilahnya tetap persis di bawah kursor.
+- **Ikon yang hidup**: matahari kecerahan membesar mengikuti kecerahannya dan sudut sinarnya ikut
+  nilainya (berputar saat diseret, diam saat tidak disentuh). Ikon speaker membal saat bisu
+  berganti, dari klik ikonnya maupun tombol bisu keyboard. Bilah volume memudar ke abu-abu saat
+  dibisukan dan kembali putih, tidak lagi berganti mendadak, dan angkanya bergulir menjadi "Bisu".
+- **Tombol sakelar**: tombol Mikrofon dan Senyap kini berikon (mikrofon, bulan sabit). Saat
+  diklik, warnanya menyapu dari kiri sambil tombolnya sedikit membal, dan tulisannya berganti
+  pelan ("Mikrofon nyala" → "Mikrofon bisu"). Saat dimatikan, warnanya surut ke kiri.
+- **Cincin senyap**: cincin kecil di samping "Senyap 42 mnt lagi" menyusut mengikuti sisa waktu.
+  Diperbarui tiap menit bersama jam, jadi tidak ada frame tambahan.
+- **Pendaran keadaan**: oranye lembut dari bawah panel selama mikrofon bisu, biru tenang selama
+  senyap; kalau keduanya, oranye yang menang karena lebih penting selama panggilan. Selain itu
+  tanpa pendaran. Pendarannya ikut menyala atau padam bersama sapuan tombolnya.
+- **Animasi masuk** sekitar 0,7 detik: kedua bilah menyapu dari kosong ke nilainya sambil
+  matahari berputar ke tempatnya dan angkanya muncul pelan, lalu tombol di bawah naik bergantian
+  dari kiri. Semuanya ikut setelan "Efek animasi" Windows. Di luar animasi tidak ada gerak
+  tambahan.
+- Area klik slider dan tombol selalu berada di tempat akhirnya, walau tombolnya masih naik.
+- Pratinjau baru: `controls_enter`, `controls_enter_late`, `controls_glide`, `controls_mute`,
+  `controls_mic_on`, `controls_mic_off`, `controls_quiet`, `controls_quiet_on`, `controls_dim`,
+  `controls_light_muted`.
+
+### Sedotan "Bersihkan" di Shelf
+
+"Bersihkan" kini menjadi penyedot debu kecil: semua file di shelf tersedot ke tulisannya.
+
+- **Tersedot berurutan, yang terdekat dulu**: ubin paling kanan pergi duluan, lalu menyusul ke
+  kiri. Tiap ubin lepas dari rak dengan sentakan kecil, lalu melaju di jalur melengkung ke
+  tulisan "Bersihkan" sambil makin cepat, mengecil, memanjang searah lajunya, dan meninggalkan
+  bayang tipis di belakangnya. Nama file dan bayangannya di rak memudar saat ubin terangkat.
+  Untuk 5 ubin sekitar 1,1 detik.
+- **Tarikan angin**: selama kursor di atas "Bersihkan", semua ubin condong sedikit (3°) ke
+  arahnya sebagai ancang-ancang. Selama menyedot, ubin yang menunggu giliran condong lebih kuat
+  dan bergetar halus.
+- **Tulisan yang menelan**: selama menyedot, "Bersihkan" berwarna aksen dengan pusaran tiga
+  busur yang berputar di sekelilingnya, dan membesar sesaat tiap ubin masuk. Angka di judul
+  "Shelf · 5" bergulir turun ke 0.
+- **File yang tidak terlihat**: kalau shelf berisi lebih dari 5 file, chip "+7" muncul di rak
+  setelah ubin terdekat pergi dan ikut tersedot paling akhir.
+- **Penutup**: ubin terakhir ditelan lebih besar, papan rak memudar, lalu tampilan shelf kosong
+  muncul pelan dengan ikon yang mengangguk sekali.
+- **Urungkan**: selama 6 detik setelah shelf bersih, "Urungkan" muncul di tempat "Bersihkan".
+  Kalau diklik, semua file kembali: ubinnya dimuntahkan dari tulisan, terbang balik ke raknya,
+  lalu mendarat memantul, sementara angka di judul bergulir naik. Thumbnail-nya disimpan selama
+  itu, jadi tidak perlu dibuat ulang. Begitu ada file baru dilepas ke shelf, "Urungkan" hilang.
+- Selama sedotan atau muntahan, ubin tidak bisa diklik dan shelf tidak bisa digulir. Panel yang
+  ditutup di tengah sedotan langsung menyelesaikannya, begitu pula file yang dilepas ke shelf.
+- Tanpa "Efek animasi" Windows, shelf langsung kosong seperti dulu dan "Urungkan" langsung
+  mengembalikan isinya. Hapus satu ubin dengan tombol × tetap terangkat seperti sebelumnya.
+- Pratinjau baru: `shelf_clear_lean`, `shelf_vacuum_hop`, `shelf_vacuum_fly`, `shelf_vacuum_gulp`,
+  `shelf_vacuum_last`, `shelf_vacuum_chip`, `shelf_vacuum_chip_fly`, `shelf_vacuum_light`,
+  `shelf_emptied`, `shelf_undo`, `shelf_spit`, `shelf_spit_land`.

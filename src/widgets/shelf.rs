@@ -67,6 +67,21 @@ impl Shelf {
         self.clamp_scroll();
     }
 
+    /// Kosongkan shelf; isinya dan posisi gulirnya dikembalikan, untuk "Urungkan".
+    pub fn take_all(&mut self) -> (Vec<Item>, usize) {
+        let scroll = std::mem::take(&mut self.scroll);
+        (std::mem::take(&mut self.items), scroll)
+    }
+
+    /// Kembalikan isi dari `take_all`, hanya kalau shelf masih kosong.
+    pub fn restore(&mut self, items: Vec<Item>, scroll: usize) {
+        if self.items.is_empty() {
+            self.items = items;
+            self.scroll = scroll;
+            self.clamp_scroll();
+        }
+    }
+
     /// Buang file yang sudah dipindah/dihapus di luar notch. `true` kalau ada yang berubah.
     pub fn prune_missing(&mut self) -> bool {
         let before = self.items.len();
@@ -112,5 +127,21 @@ mod tests {
         assert_eq!(shelf.scroll, 1);
         shelf.scroll_by(-5);
         assert_eq!(shelf.scroll, 0);
+    }
+
+    #[test]
+    fn cleared_items_come_back_on_undo() {
+        let mut shelf = Shelf::default();
+        shelf.add((0..7).map(|i| PathBuf::from(format!("C:\\contoh\\file{i}.png"))));
+        let (items, scroll) = shelf.take_all();
+        assert!(shelf.items.is_empty());
+        assert_eq!((items.len(), scroll, shelf.scroll), (7, 2, 0));
+        shelf.restore(items, scroll);
+        assert_eq!((shelf.items.len(), shelf.scroll, shelf.items[6].id), (7, 2, 7));
+        // Shelf yang sudah terisi lagi tidak ditimpa.
+        let (items, scroll) = shelf.take_all();
+        shelf.add([PathBuf::from("C:\\contoh\\baru.png")]);
+        shelf.restore(items, scroll);
+        assert_eq!(shelf.items.len(), 1);
     }
 }

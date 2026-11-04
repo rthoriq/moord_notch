@@ -115,6 +115,8 @@ fn export_stills(dir: &Path) {
         short: "4m".into(),
         progress: 0.26,
         total_minutes: 5,
+        ending: false,
+        fx: None,
     };
 
     // Tema hitam, tanpa titik privasi (kecuali gambar yang memang tentang itu).

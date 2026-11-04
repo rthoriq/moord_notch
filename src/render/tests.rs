@@ -19,6 +19,7 @@ struct Sample {
     timer: TimerView,
     controls: ControlsView,
     shelf_fx: ShelfFx,
+    trend: SystemTrend,
 }
 
 fn sample() -> Sample {
@@ -54,12 +55,14 @@ fn sample() -> Sample {
             progress: 0.29,
             sessions: 2,
             minutes_left: 18,
+            fx: None,
         },
         water: WaterView {
             ml: 1250,
             goal: 2000,
             week: vec![(1500, 'S'), (2000, 'S'), (750, 'R'), (1750, 'K'), (2250, 'J'), (1000, 'S'), (1250, 'M')],
             next: Some("19:37".into()),
+            pour: None,
         },
         privacy: Usage { microphone: vec!["Discord".into()], ..Usage::default() },
         system: Stats {
@@ -75,19 +78,46 @@ fn sample() -> Sample {
         },
         timer: idle_timer(),
         shelf_fx: ShelfFx::default(),
+        trend: sample_trend(18.0, 30),
         controls: ControlsView {
             volume: Some((0.62, false)),
             brightness: Some(70),
             mic: Some(false),
             quiet_minutes: None,
             city: Some("Kota: Jakarta".into()),
+            fx: ControlsFx::default(),
         },
     }
 }
 
+/// Riwayat CPU contoh: `count` detik terakhir yang naik turun di sekitar `base` persen.
+fn sample_trend(base: f32, count: usize) -> SystemTrend {
+    let cpu = (0..count).map(|i| base + 9.0 * (i as f32 * 0.7).sin() + 5.0 * (i as f32 * 1.9).cos()).collect();
+    SystemTrend { cpu, beat: true, scan: None }
+}
+
+/// Shelf contoh berisi file (tiruan) dengan nama-nama ini.
+fn sample_shelf(names: &[&str]) -> Shelf {
+    let mut shelf = Shelf::default();
+    shelf.add(names.iter().map(|n| PathBuf::from(format!("C:\\contoh\\{n}"))));
+    shelf
+}
+
+/// Daftar tugas contoh: teks dan sudah selesai atau belum.
+fn sample_tasks(items: &[(&str, bool)]) -> Tasks {
+    let mut tasks = Tasks::default();
+    for (i, (text, done)) in items.iter().enumerate() {
+        tasks.add(text);
+        if *done {
+            tasks.toggle(i);
+        }
+    }
+    tasks
+}
+
 /// Timer yang tidak berjalan, untuk keadaan selain halaman/pil timer.
 fn idle_timer() -> TimerView {
-    TimerView { running: false, active: false, clock: "00:00".into(), short: String::new(), progress: 0.0, total_minutes: 0 }
+    TimerView { running: false, active: false, clock: "00:00".into(), short: String::new(), progress: 0.0, total_minutes: 0, ending: false, fx: None }
 }
 
 /// Satu keadaan yang dirender ke gambar preview.
@@ -120,6 +150,21 @@ struct State<'a> {
     lyrics_button: Option<bool>,
     welcome: bool,
     call: Option<&'a CallView>,
+    prayer: Option<&'a PrayerView>,
+    water: Option<&'a WaterView>,
+    focus: Option<&'a FocusView>,
+    stats: Option<&'a Stats>,
+    trend: Option<&'a SystemTrend>,
+    timer: Option<&'a TimerView>,
+    tasks: Option<&'a Tasks>,
+    task_fx: Option<(&'a TaskFx, f32)>,
+    shelf: Option<&'a Shelf>,
+    controls: Option<&'a ControlsView>,
+    page_age: f32,
+    /// Jam yang tampil, jamnya (untuk pendaran Beranda), dan animasi sesaat di Beranda.
+    time: &'a str,
+    hour: u32,
+    home_fx: Option<&'a HomeFx>,
 }
 
 impl<'a> State<'a> {
@@ -152,6 +197,20 @@ impl<'a> State<'a> {
             lyrics_button: None,
             welcome: false,
             call: None,
+            prayer: None,
+            water: None,
+            focus: None,
+            stats: None,
+            trend: None,
+            timer: None,
+            tasks: None,
+            task_fx: None,
+            shelf: None,
+            controls: None,
+            page_age: f32::MAX,
+            time: "19:21",
+            hour: 19,
+            home_fx: None,
         }
     }
 }
@@ -159,6 +218,36 @@ impl<'a> State<'a> {
 /// Panggilan contoh di Zoom; `muted` = mikrofonnya dibisukan.
 fn sample_call(muted: bool) -> CallView {
     CallView { app: "Zoom".into(), clock: "12:34".into(), muted: Some(muted), camera: !muted }
+}
+
+/// Jadwal sholat contoh (Palopo, 1 November 2026) pukul 14.09: Ashar berikutnya.
+fn sample_prayer() -> PrayerView {
+    let times = [("Imsak", "04:09"), ("Subuh", "04:19"), ("Terbit", "05:33"), ("Dzuhur", "11:46"), ("Ashar", "15:04"), ("Maghrib", "17:53"), ("Isya", "19:03")];
+    PrayerView {
+        city: "Palopo".into(),
+        hijri: "21 Jumadil Awal 1448 H".into(),
+        times: times.iter().enumerate().map(|(i, (name, time))| (*name, time.to_string(), i < 4)).collect(),
+        next: 4,
+        next_name: "Ashar",
+        next_time: "15:04".into(),
+        tomorrow: false,
+        left: "55 menit".into(),
+        current: Some("Dzuhur"),
+        progress: 0.62,
+        soon: None,
+        sky: Sky::Noon,
+    }
+}
+
+/// Catatan minum contoh dengan "ml" hari ini, sedang dituang dari isi "pour.0" sejak "pour.1" detik.
+fn sample_water(ml: u32, pour: Option<(f32, f32)>) -> WaterView {
+    let week = vec![(1500, 'S'), (2000, 'S'), (750, 'R'), (1750, 'K'), (2250, 'J'), (1000, 'S'), (ml, 'M')];
+    WaterView { ml, goal: 2000, week, next: Some("19:37".into()), pour }
+}
+
+/// Istirahat yang baru berjalan sesudah sesi fokus ketiga hari ini selesai.
+fn focus_break_like() -> FocusView {
+    FocusView { phase: Phase::Break, clock: "04:59".into(), progress: 0.01, sessions: 3, ..sample().focus }
 }
 
 /// Lirik contoh (karangan sendiri) dengan baris ketiga sedang dinyanyikan.
@@ -177,30 +266,57 @@ fn sample_lyrics(scroll: f32) -> LyricsView {
     }
 }
 
-/// Kalender contoh: Selasa 20 Oktober 2026 dipilih dan hari ini, tiga agenda.
+/// Agenda contoh.
+fn agenda(id: u64, time: &str, text: &str, done: bool) -> AgendaItem {
+    AgendaItem { id, time: time.into(), text: text.into(), done, soon: false }
+}
+
+/// Kalender contoh: Senin 20 Oktober 2026 dipilih dan hari ini, tiga agenda.
 fn sample_calendar() -> CalendarView {
-    let names = ["Sab", "Min", "Sen", "Sel", "Rab"];
+    let week = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"];
     CalendarView {
         month: "Okt".into(),
         year: "2026".into(),
-        days: (0..5)
-            .map(|i| DayView {
-                offset: i - 2,
-                name: names[i as usize],
-                number: 18 + i as u32,
-                today: i == 2,
-                selected: i == 2,
-                has_events: i == 2 || i == 4,
+        days: (-CALENDAR_SPAN..=CALENDAR_SPAN)
+            .map(|offset| DayView {
+                offset,
+                name: week[offset.rem_euclid(7) as usize],
+                number: (20 + offset) as u32,
+                today: offset == 0,
+                selected: offset == 0,
+                has_events: offset == 0 || offset == 2,
             })
             .collect(),
-        events: vec![
-            AgendaItem { id: 1, time: String::new(), text: "Ulang tahun Ibu".into(), done: false },
-            AgendaItem { id: 2, time: "09.00".into(), text: "Rapat tim".into(), done: false },
-            AgendaItem { id: 3, time: "15.30".into(), text: "Beli kado".into(), done: true },
-        ],
+        events: vec![agenda(1, "", "Ulang tahun Ibu", false), agenda(2, "09.00", "Rapat tim", false), agenda(3, "15.30", "Beli kado", true)],
         scroll: 0,
+        center: 0.0,
+        shift: None,
+        agenda_fx: None,
     }
 }
+
+/// Kalender contoh yang sedang meluncur ke hari sesudahnya: `center` dari -1 ke 0, `t` 0..1,
+/// dan bulan sebelumnya kalau peralihannya melewati batas bulan.
+fn sliding_calendar(center: f32, t: f32, month: Option<(&str, &str)>) -> CalendarView {
+    let mut cal = sample_calendar();
+    cal.days.iter_mut().for_each(|d| d.selected = d.offset == 1);
+    let before = std::mem::replace(&mut cal.events, vec![agenda(7, "10.00", "Kelas yoga", false)]);
+    if month.is_some() {
+        cal.month = "Nov".into();
+    }
+    cal.center = center;
+    let month = month.map(|(m, y)| (m.to_string(), y.to_string()));
+    cal.shift = Some(DayShift { t, dir: 1.0, events: before.into_iter().take(2).collect(), month });
+    cal
+}
+
+/// Kalender contoh dengan agenda `events` (gulir `scroll`) yang sedang berubah.
+fn agenda_calendar(events: Vec<AgendaItem>, scroll: usize, fx: AgendaFx, t: f32) -> CalendarView {
+    CalendarView { events, scroll, agenda_fx: Some((fx, t)), ..sample_calendar() }
+}
+
+/// Beranda tanpa animasi sesaat.
+static STILL_HOME: HomeFx = HomeFx { clock: None, track: None, art: None };
 
 /// Render beberapa keadaan notch ke `target/preview/*.bmp` supaya tampilannya bisa
 /// dicek tanpa menjalankan aplikasi. Jalankan dengan `cargo test`.
@@ -248,23 +364,116 @@ fn preview_states() {
         short: "4m".into(),
         progress: 0.26,
         total_minutes: 5,
+        ending: false,
+        fx: None,
     };
+    let timer_paused = TimerView { running: false, clock: "02:10".into(), short: "3m".into(), progress: 0.57, ..running.clone() };
+    let timer_ending = TimerView { clock: "00:07".into(), short: "7d".into(), progress: 0.977, ending: true, ..running.clone() };
+    let timer_turn = TimerView { clock: "05:00".into(), short: "5m".into(), progress: 0.001, fx: Some((TimerFx::Flip, 0.25)), ..running.clone() };
+    let timer_settle = TimerView { fx: Some((TimerFx::Flip, 0.55)), ..timer_turn.clone() };
+    let timer_add = TimerView { clock: "04:42".into(), total_minutes: 6, progress: 0.22, fx: Some((TimerFx::Add(0.26), 0.16)), ..running.clone() };
+    let timer_up = TimerView { total_minutes: 5, fx: Some((TimerFx::Done, 0.1)), ..idle_timer() };
+    let timer_done_late = TimerView { fx: Some((TimerFx::Done, 1.85)), ..timer_up.clone() };
+    let task_fx = |change, rows: &[Option<usize>], gone: &[(&str, bool, usize)], progress| TaskFx {
+        change,
+        rows: rows.to_vec(),
+        scroll: 0,
+        gone: gone.iter().map(|(text, done, row)| (text.to_string(), *done, *row)).collect(),
+        progress,
+    };
+    // Tugas "Rapikan folder" baru dicentang: tercoret, lalu turun ke kelompok selesai.
+    let tasks_checked = sample_tasks(&[("Kirim revisi desain ke klien", false), ("Beli kopi", true), ("Rapikan folder Downloads yang sudah penuh sekali", true), ("Bayar listrik", false)]);
+    let checked = task_fx(TaskChange::Check { index: 2, last: false }, &[Some(0), Some(3), Some(1), Some(2)], &[], 0.25);
+    // Tugas terakhir dicentang: konfeti.
+    let tasks_all_done = sample_tasks(&[("Beli kopi", true), ("Bayar listrik", true)]);
+    let all_done = task_fx(TaskChange::Check { index: 1, last: true }, &[Some(1), Some(0)], &[], 0.5);
+    let tasks_added = sample_tasks(&[("Kirim revisi desain ke klien", false), ("Beli kopi", true), ("Telepon ibu", false)]);
+    let added = task_fx(TaskChange::Add, &[Some(0), Some(1), None], &[], 0.5);
+    let tasks_removed = sample_tasks(&[("Beli kopi", true), ("Rapikan folder Downloads yang sudah penuh sekali", false), ("Bayar listrik", false)]);
+    let removed = task_fx(TaskChange::Remove, &[Some(3), Some(1), Some(2)], &[("Kirim revisi desain ke klien", false, 0)], 0.25);
+    let tasks_cleared = sample_tasks(&[("Kirim revisi desain ke klien", false), ("Bayar listrik", false)]);
+    let cleared = task_fx(TaskChange::ClearDone, &[Some(0), Some(1)], &[("Beli kopi", true, 2), ("Cuci mobil", true, 3)], 0.5);
+    let tasks_mixed = sample_tasks(&[("Kirim revisi desain ke klien", false), ("Bayar listrik", false), ("Beli kopi", true)]);
     let muted_controls = ControlsView {
         volume: Some((0.3, true)),
         brightness: None,
         mic: Some(true),
         quiet_minutes: Some(42),
         city: None,
+        fx: ControlsFx::default(),
     };
+    let controls = |volume: (f32, bool), brightness: u32, mic: bool, quiet_minutes: Option<u32>, fx: ControlsFx| ControlsView {
+        volume: Some(volume),
+        brightness: Some(brightness),
+        mic: Some(mic),
+        quiet_minutes,
+        city: Some("Kota: Jakarta".into()),
+        fx,
+    };
+    let still = ControlsFx::default();
+    let gliding = controls((0.62, false), 70, false, None, ControlsFx { volume: Some((0.3, 0.07)), brightness: Some((0.95, 0.07)), ..still });
+    let muting = controls((0.62, true), 70, false, None, ControlsFx { mute: Some(0.12), ..still });
+    let mic_on = controls((0.62, false), 70, true, None, ControlsFx { mic: Some(0.1), ..still });
+    let mic_open = controls((0.62, false), 70, false, None, ControlsFx { mic: Some(0.12), ..still });
+    let quiet = controls((0.62, false), 70, false, Some(42), still);
+    let quiet_on = controls((0.62, false), 70, false, Some(60), ControlsFx { quiet: Some(0.15), ..still });
+    let dim = controls((0.05, false), 12, false, Some(9), still);
     let targeted = ShelfFx { targeted: true, dash: 1.3, ..ShelfFx::default() };
     let sharing = ShelfFx { share_targeted: true, dash: 2.2, ..ShelfFx::default() };
     let waiting = ShelfFx { targeted: false, dash: 3.1, ..ShelfFx::default() };
     let dropped = ShelfFx {
         glow: Some(0.3),
-        tiles: [(3u64, (0.8f32, 0.7f32)), (1, (0.75, 0.5))].into_iter().collect(),
+        tiles: [(3u64, (0.15f32, false)), (1, (0.12, true))].into_iter().collect(),
         ..ShelfFx::default()
     };
     let no_fx = ShelfFx::default();
+    let tile = |id: u64, age: f32, removing: bool| ShelfFx { tiles: [(id, (age, removing))].into_iter().collect(), ..ShelfFx::default() };
+    let (falling, bouncing, lifting) = (tile(3, 0.14, false), tile(3, 0.36, false), tile(1, 0.15, true));
+    let shelf_kinds = sample_shelf(&["Laporan Keuangan.pdf", "Proposal klien.docx", "Anggaran 2026.xlsx", "Arsip foto.zip", "Rekaman rapat.mp3"]);
+    // "Project" baru dihapus: dua ubin sisanya merapat ke kiri.
+    let mut shelf_pair = sample_shelf(&["Project", "Corporate and Campaign.png", "Infuse Navy Tote Bag.png"]);
+    shelf_pair.remove(1);
+    let sliding = ShelfFx { slots: [(2u64, 0.55f32), (3, 1.55)].into_iter().collect(), ..ShelfFx::default() };
+    let shelf_empty = Shelf::default();
+    // "Bersihkan" menyedot ubin ke tulisannya, lalu "Urungkan" memuntahkannya kembali.
+    let flowing = |age: f32, back: bool| ShelfFx { flow: Some((age, back)), lean: 1.0, ..ShelfFx::default() };
+    let (suck_hop, suck_fly, suck_gulp, suck_last) = (flowing(0.1, false), flowing(0.4, false), flowing(0.62, false), flowing(0.9, false));
+    let (chip_wait, chip_fly) = (flowing(0.5, false), flowing(0.8, false));
+    let (spit_out, spit_land) = (flowing(0.3, true), flowing(0.62, true));
+    let leaning = ShelfFx { lean: 1.0, ..ShelfFx::default() };
+    let emptied = ShelfFx { emptied: Some(0.2), undo: true, ..ShelfFx::default() };
+    let undo = ShelfFx { undo: true, ..ShelfFx::default() };
+    let shelf_full = sample_shelf(&[
+        "Laporan Keuangan.pdf", "Proposal klien.docx", "Anggaran 2026.xlsx", "Arsip foto.zip", "Rekaman rapat.mp3",
+        "Catatan.txt", "Kontrak.pdf", "Desain.png", "Video.mp4", "Data.csv", "Slide.pptx", "Project",
+    ]);
+    let roll_minute = HomeFx { clock: Some(("19:59".into(), "Senin, 19 Oktober 2026".into(), 0.3)), ..HomeFx::default() };
+    let roll_late = HomeFx { clock: Some(("19:59".into(), "Senin, 19 Oktober 2026".into(), 0.5)), ..HomeFx::default() };
+    let roll_midnight = HomeFx { clock: Some(("23:59".into(), "Minggu, 18 Oktober 2026".into(), 0.25)), ..HomeFx::default() };
+    let previous_song = TrackFx { title: "Sial".into(), artist: "Mahalini".into(), progress: Some(0.92), dir: 1.0 };
+    let track_change = HomeFx { track: Some((previous_song.clone(), 0.2)), art: Some(0.2), ..HomeFx::default() };
+    let track_late = HomeFx { track: Some((previous_song, 0.34)), art: Some(0.34), ..HomeFx::default() };
+    let cal_sliding = sliding_calendar(-0.5, 0.45, None);
+    let cal_month = sliding_calendar(-0.7, 0.3, Some(("Okt", "2026")));
+    let checked_agenda = AgendaFx { change: AgendaChange::Check(2), rows: Vec::new(), gone: None };
+    let mut checked_events = sample_calendar().events;
+    checked_events[1].done = true;
+    let cal_check = agenda_calendar(checked_events, 0, checked_agenda, 0.22);
+    // "12.00 Makan siang" baru ditambahkan di antara dua agenda; daftarnya digulir supaya terlihat.
+    let added_agenda = AgendaFx { change: AgendaChange::Add(9), rows: vec![(1, 0.0), (2, 1.0), (3, 2.0)], gone: None };
+    let added_events = vec![
+        agenda(1, "", "Ulang tahun Ibu", false),
+        agenda(2, "09.00", "Rapat tim", false),
+        agenda(9, "12.00", "Makan siang", false),
+        agenda(3, "15.30", "Beli kado", true),
+    ];
+    let cal_add = agenda_calendar(added_events, 1, added_agenda, 0.32);
+    let removed_agenda =
+        AgendaFx { change: AgendaChange::Remove, rows: vec![(1, 0.0), (3, 2.0)], gone: Some((agenda(2, "09.00", "Rapat tim", false), 1.0)) };
+    let removed_events = vec![agenda(1, "", "Ulang tahun Ibu", false), agenda(3, "15.30", "Beli kado", true)];
+    let cal_remove = agenda_calendar(removed_events, 0, removed_agenda, 0.2);
+    let mut cal_soon = sample_calendar();
+    cal_soon.events[1] = AgendaItem { time: "15 mnt lagi".into(), soon: true, ..agenda(2, "", "Rapat tim", false) };
     let roll = Roll { from: "61".into(), t: 0.45, up: true };
     let charging = Hud::Power { plugged: true, percent: Some(80), low: false };
     let calendar = sample_calendar();
@@ -283,6 +492,32 @@ fn preview_states() {
     let call_long = CallView { clock: "1:02:03".into(), ..sample_call(false) };
     let call_locked = CallView { app: String::new(), ..sample_call(false) };
     let call_voice = CallView { camera: false, ..sample_call(false) };
+    let prayer = sample_prayer();
+    let prayer_soon = PrayerView { soon: Some("8m".into()), ..sample_prayer() };
+    let mut prayer_tomorrow = PrayerView {
+        next: 1,
+        next_name: "Subuh",
+        next_time: "04:19".into(),
+        tomorrow: true,
+        left: "8 jam 58 menit".into(),
+        current: Some("Isya"),
+        progress: 0.03,
+        sky: Sky::Night,
+        ..sample_prayer()
+    };
+    prayer_tomorrow.times.iter_mut().for_each(|t| t.2 = false);
+    let water_tap = sample_water(1250, Some((0.5, 0.2)));
+    let water_pour = sample_water(1250, Some((0.5, 0.55)));
+    let water_settle = sample_water(1250, Some((0.5, 1.1)));
+    let water_goal = sample_water(2000, Some((0.875, 1.45)));
+    let water_undo = sample_water(1000, Some((0.625, 0.25)));
+    let water_empty = sample_water(0, None);
+    let water_full = sample_water(2250, None);
+    let prayer_dawn = PrayerView { sky: Sky::Dawn, current: Some("Subuh"), ..sample_prayer() };
+    let prayer_morning = PrayerView { sky: Sky::Morning, current: None, ..sample_prayer() };
+    let prayer_afternoon = PrayerView { sky: Sky::Afternoon, current: Some("Ashar"), ..sample_prayer() };
+    let prayer_dusk = PrayerView { sky: Sky::Dusk, current: Some("Maghrib"), ..sample_prayer() };
+    let prayer_due = Hud::Prayer { name: "Ashar", time: "15:04".into(), city: "Palopo".into() };
     let mic_off = Hud::Mic { muted: true };
     let call_ended = Hud::CallEnded { app: "Zoom".into(), length: "42 menit".into() };
     let message_locked =
@@ -296,6 +531,18 @@ fn preview_states() {
 
     // Maskot di pil hanya terlihat kalau pomodoro tidak berjalan.
     let idle = FocusView { running: false, active: false, ..sample().focus };
+    let system_busy = Stats { cpu: 81.0, ..sample().system };
+    let system_hot = Stats { gpu: Some(96.0), gpu_temp: Some(89.0), ..sample().system };
+    let busy_trend = sample_trend(66.0, 30);
+    let young_trend = SystemTrend { beat: false, ..sample_trend(20.0, 3) };
+    let scanning = SystemTrend { scan: Some(0.5), ..SystemTrend::default() };
+    let focus_break = FocusView { phase: Phase::Break, clock: "03:12".into(), progress: 0.36, sessions: 3, ..sample().focus };
+    let focus_paused = FocusView { running: false, ..sample().focus };
+    let focus_fresh = FocusView { running: false, active: false, clock: "25:00".into(), progress: 0.0, sessions: 0, ..sample().focus };
+    let focus_many = FocusView { sessions: 11, ..sample().focus };
+    let focus_wind = FocusView { clock: "25:00".into(), progress: 0.0, fx: Some((FocusFx::Wind, 0.3)), ..sample().focus };
+    let focus_done = FocusView { fx: Some((FocusFx::Done(Phase::Focus), 0.16)), ..focus_break_like() };
+    let focus_landed = FocusView { fx: Some((FocusFx::Done(Phase::Focus), 0.42)), ..focus_break_like() };
     let states = [
         State::new("pill", View::Pill, Page::Home),
         State { media: true, ..State::new("pill_music", View::Pill, Page::Home) },
@@ -356,8 +603,39 @@ fn preview_states() {
         State { hovered: Some(Hit::VolumeSlider), ..State::new("page_controls", View::Panel, Page::Controls) },
         State { city_draft: Some("Yogya"), ..State::new("page_controls_city", View::Panel, Page::Controls) },
         State::new("page_controls_muted", View::Panel, Page::Controls),
+        State { page_age: 0.22, ..State::new("controls_enter", View::Panel, Page::Controls) },
+        State { page_age: 0.42, ..State::new("controls_enter_late", View::Panel, Page::Controls) },
+        State { controls: Some(&gliding), ..State::new("controls_glide", View::Panel, Page::Controls) },
+        State { controls: Some(&muting), hovered: Some(Hit::VolumeMute), ..State::new("controls_mute", View::Panel, Page::Controls) },
+        State { controls: Some(&mic_on), hovered: Some(Hit::MicToggle), ..State::new("controls_mic_on", View::Panel, Page::Controls) },
+        State { controls: Some(&mic_open), hovered: Some(Hit::MicToggle), ..State::new("controls_mic_off", View::Panel, Page::Controls) },
+        State { controls: Some(&quiet), ..State::new("controls_quiet", View::Panel, Page::Controls) },
+        State { controls: Some(&quiet_on), ..State::new("controls_quiet_on", View::Panel, Page::Controls) },
+        State { controls: Some(&dim), ..State::new("controls_dim", View::Panel, Page::Controls) },
+        State { theme: Theme::Light, ..State::new("controls_light_muted", View::Panel, Page::Controls) },
         State { hovered: Some(Hit::TimerPreset(5)), ..State::new("page_timer", View::Panel, Page::Timer) },
         State::new("page_timer_idle", View::Panel, Page::Timer),
+        State { timer: Some(&timer_paused), hovered: Some(Hit::TimerToggle), ..State::new("page_timer_paused", View::Panel, Page::Timer) },
+        State { timer: Some(&timer_ending), ..State::new("page_timer_ending", View::Panel, Page::Timer) },
+        State { theme: Theme::Light, ..State::new("page_timer_light", View::Panel, Page::Timer) },
+        State { theme: Theme::Light, ..State::new("page_timer_light_idle", View::Panel, Page::Timer) },
+        State { tasks: Some(&tasks_checked), task_fx: Some((&checked, 0.26)), ..State::new("page_tasks_check", View::Panel, Page::Tasks) },
+        State { tasks: Some(&tasks_checked), task_fx: Some((&checked, 0.58)), ..State::new("page_tasks_check_slide", View::Panel, Page::Tasks) },
+        State { tasks: Some(&tasks_all_done), task_fx: Some((&all_done, 0.45)), ..State::new("page_tasks_all_done", View::Panel, Page::Tasks) },
+        State { tasks: Some(&tasks_added), task_fx: Some((&added, 0.3)), ..State::new("page_tasks_add", View::Panel, Page::Tasks) },
+        State { tasks: Some(&tasks_removed), task_fx: Some((&removed, 0.14)), ..State::new("page_tasks_remove", View::Panel, Page::Tasks) },
+        State { tasks: Some(&tasks_cleared), task_fx: Some((&cleared, 0.12)), ..State::new("page_tasks_clear", View::Panel, Page::Tasks) },
+        State { tasks: Some(&tasks_mixed), page_age: 0.3, ..State::new("page_tasks_enter", View::Panel, Page::Tasks) },
+        State { tasks: Some(&tasks_mixed), ..State::new("page_tasks_mixed", View::Panel, Page::Tasks) },
+        State { tasks: Some(&tasks_mixed), theme: Theme::Light, ..State::new("page_tasks_light", View::Panel, Page::Tasks) },
+        State { tasks: Some(&tasks_all_done), ..State::new("page_tasks_all_done_settled", View::Panel, Page::Tasks) },
+        State { timer: Some(&timer_turn), hovered: Some(Hit::TimerPreset(5)), ..State::new("page_timer_flip", View::Panel, Page::Timer) },
+        State { timer: Some(&timer_settle), ..State::new("page_timer_flip_settle", View::Panel, Page::Timer) },
+        State { timer: Some(&timer_add), hovered: Some(Hit::TimerAdd), ..State::new("page_timer_add", View::Panel, Page::Timer) },
+        State { timer: Some(&timer_up), ..State::new("page_timer_done", View::Panel, Page::Timer) },
+        State { timer: Some(&timer_done_late), ..State::new("page_timer_done_late", View::Panel, Page::Timer) },
+        State { page_age: 0.3, ..State::new("page_timer_enter", View::Panel, Page::Timer) },
+        State { page_age: 0.35, ..State::new("page_timer_enter_idle", View::Panel, Page::Timer) },
         State::new("pill_timer", View::Pill, Page::Home),
         State { hud: Some(&timer_done), ..State::new("hud_timer", View::Hud, Page::Home) },
         State { weather: Some("28° Mendung · Jakarta"), ..State::new("page_clock_weather", View::Panel, Page::Home) },
@@ -365,6 +643,26 @@ fn preview_states() {
         State { fx: Some(&waiting), ..State::new("drop_waiting", View::Panel, Page::Shelf) },
         State { fx: Some(&targeted), ..State::new("drop_targeted", View::Panel, Page::Shelf) },
         State { fx: Some(&dropped), ..State::new("shelf_dropped", View::Panel, Page::Shelf) },
+        State { fx: Some(&falling), ..State::new("page_shelf_drop_fall", View::Panel, Page::Shelf) },
+        State { fx: Some(&bouncing), ..State::new("page_shelf_drop_bounce", View::Panel, Page::Shelf) },
+        State { fx: Some(&lifting), ..State::new("page_shelf_lift", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_pair), fx: Some(&sliding), ..State::new("page_shelf_slide", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_kinds), ..State::new("page_shelf_kinds", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_kinds), theme: Theme::Light, ..State::new("page_shelf_light", View::Panel, Page::Shelf) },
+        State { page_age: 0.3, ..State::new("page_shelf_enter", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_empty), page_age: 0.32, ..State::new("page_shelf_empty_enter", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_kinds), fx: Some(&leaning), hovered: Some(Hit::ShelfClear), ..State::new("shelf_clear_lean", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_kinds), fx: Some(&suck_hop), ..State::new("shelf_vacuum_hop", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_kinds), fx: Some(&suck_fly), ..State::new("shelf_vacuum_fly", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_kinds), fx: Some(&suck_gulp), ..State::new("shelf_vacuum_gulp", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_kinds), fx: Some(&suck_last), ..State::new("shelf_vacuum_last", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_full), fx: Some(&chip_wait), ..State::new("shelf_vacuum_chip", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_full), fx: Some(&chip_fly), ..State::new("shelf_vacuum_chip_fly", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_empty), fx: Some(&emptied), ..State::new("shelf_emptied", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_empty), fx: Some(&undo), hovered: Some(Hit::ShelfUndo), ..State::new("shelf_undo", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_kinds), fx: Some(&spit_out), ..State::new("shelf_spit", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_kinds), fx: Some(&spit_land), ..State::new("shelf_spit_land", View::Panel, Page::Shelf) },
+        State { shelf: Some(&shelf_kinds), fx: Some(&suck_fly), theme: Theme::Light, ..State::new("shelf_vacuum_light", View::Panel, Page::Shelf) },
         State { hud: Some(&volume), roll: Some(&roll), ..State::new("strip_volume", View::Strip, Page::Home) },
         State { hud: Some(&brightness), ..State::new("strip_brightness", View::Strip, Page::Home) },
         State { hud: Some(&caps), ..State::new("strip_capslock", View::Strip, Page::Home) },
@@ -397,6 +695,64 @@ fn preview_states() {
         State { hud: Some(&mic_off), ..State::new("strip_mic", View::Strip, Page::Home) },
         State { hud: Some(&mic_off), ..State::new("hud_mic", View::Hud, Page::Home) },
         State { hud: Some(&call_ended), ..State::new("hud_call_ended", View::Hud, Page::Home) },
+        State { prayer: Some(&prayer), ..State::new("page_prayer", View::Panel, Page::Prayer) },
+        State { prayer: Some(&prayer), theme: Theme::Light, ..State::new("page_prayer_light", View::Panel, Page::Prayer) },
+        State { prayer: Some(&prayer_tomorrow), ..State::new("page_prayer_tomorrow", View::Panel, Page::Prayer) },
+        State { hovered: Some(Hit::PrayerCity), ..State::new("page_prayer_no_city", View::Panel, Page::Prayer) },
+        State { prayer: Some(&prayer_soon), ..State::new("pill_prayer_soon", View::Pill, Page::Home) },
+        State { prayer: Some(&prayer_soon), media: true, ..State::new("pill_prayer_music", View::Pill, Page::Home) },
+        State { hud: Some(&prayer_due), ..State::new("hud_prayer", View::Hud, Page::Home) },
+        State { focus: Some(&focus_break), ..State::new("page_focus_break", View::Panel, Page::Focus) },
+        State { stats: Some(&system_busy), trend: Some(&busy_trend), ..State::new("page_system_busy", View::Panel, Page::System) },
+        State { stats: Some(&system_hot), ..State::new("page_system_hot", View::Panel, Page::System) },
+        State { trend: Some(&scanning), ..State::new("page_system_scan", View::Panel, Page::System) },
+        State { trend: Some(&young_trend), ..State::new("page_system_young", View::Panel, Page::System) },
+        State { theme: Theme::Light, ..State::new("page_system_light", View::Panel, Page::System) },
+        State { page_age: 0.3, ..State::new("page_system_enter", View::Panel, Page::System) },
+        State { focus: Some(&focus_paused), hovered: Some(Hit::FocusToggle), ..State::new("page_focus_paused", View::Panel, Page::Focus) },
+        State { focus: Some(&focus_fresh), ..State::new("page_focus_fresh", View::Panel, Page::Focus) },
+        State { focus: Some(&focus_many), ..State::new("page_focus_many", View::Panel, Page::Focus) },
+        State { theme: Theme::Light, ..State::new("page_focus_light", View::Panel, Page::Focus) },
+        State { focus: Some(&focus_wind), ..State::new("page_focus_wind", View::Panel, Page::Focus) },
+        State { focus: Some(&focus_done), ..State::new("page_focus_done", View::Panel, Page::Focus) },
+        State { focus: Some(&focus_landed), ..State::new("page_focus_done_landed", View::Panel, Page::Focus) },
+        State { page_age: 0.28, ..State::new("page_focus_enter", View::Panel, Page::Focus) },
+        State { prayer: Some(&prayer_dawn), ..State::new("page_prayer_dawn", View::Panel, Page::Prayer) },
+        State { prayer: Some(&prayer_morning), ..State::new("page_prayer_morning", View::Panel, Page::Prayer) },
+        State { prayer: Some(&prayer_afternoon), ..State::new("page_prayer_afternoon", View::Panel, Page::Prayer) },
+        State { prayer: Some(&prayer_dusk), ..State::new("page_prayer_dusk", View::Panel, Page::Prayer) },
+        State { prayer: Some(&prayer_tomorrow), theme: Theme::Light, ..State::new("page_prayer_night_light", View::Panel, Page::Prayer) },
+        State { prayer: Some(&prayer), page_age: 0.3, ..State::new("page_prayer_enter", View::Panel, Page::Prayer) },
+        State { prayer: Some(&prayer_tomorrow), page_age: 0.35, ..State::new("page_prayer_enter_night", View::Panel, Page::Prayer) },
+        State { page_age: 0.3, ..State::new("page_water_enter", View::Panel, Page::Water) },
+        State { water: Some(&water_tap), hovered: Some(Hit::WaterDrink), ..State::new("page_water_pour_tap", View::Panel, Page::Water) },
+        State { water: Some(&water_pour), hovered: Some(Hit::WaterDrink), ..State::new("page_water_pour", View::Panel, Page::Water) },
+        State { water: Some(&water_settle), ..State::new("page_water_pour_settle", View::Panel, Page::Water) },
+        State { water: Some(&water_goal), ..State::new("page_water_goal", View::Panel, Page::Water) },
+        State { water: Some(&water_undo), hovered: Some(Hit::WaterUndo), ..State::new("page_water_undo", View::Panel, Page::Water) },
+        State { water: Some(&water_empty), ..State::new("page_water_empty", View::Panel, Page::Water) },
+        State { water: Some(&water_full), ..State::new("page_water_full", View::Panel, Page::Water) },
+        State { water: Some(&water_pour), theme: Theme::Light, ..State::new("page_water_light", View::Panel, Page::Water) },
+        State { water: Some(&water_pour), theme: Theme::Glass, ..State::new("page_water_glass", View::Panel, Page::Water) },
+        State { hour: 7, ..State::new("home_glow_morning", View::Panel, Page::Home) },
+        State { hour: 12, ..State::new("home_glow_noon", View::Panel, Page::Home) },
+        State { hour: 16, calendar: Some(&calendar), ..State::new("home_glow_evening", View::PanelWide, Page::Home) },
+        State { hour: 7, theme: Theme::Light, ..State::new("home_glow_light", View::Panel, Page::Home) },
+        State { time: "20:00", home_fx: Some(&roll_minute), ..State::new("home_clock_roll", View::Panel, Page::Home) },
+        State { time: "20:00", home_fx: Some(&roll_late), ..State::new("home_clock_roll_late", View::Panel, Page::Home) },
+        State { time: "00:00", home_fx: Some(&roll_midnight), ..State::new("home_clock_midnight", View::Panel, Page::Home) },
+        State { time: "20:00", media: true, home_fx: Some(&roll_minute), ..State::new("home_clock_roll_player", View::Panel, Page::Home) },
+        State { calendar: Some(&cal_sliding), ..State::new("home_calendar_slide", View::PanelWide, Page::Home) },
+        State { calendar: Some(&cal_month), ..State::new("home_calendar_month", View::PanelWide, Page::Home) },
+        State { calendar: Some(&cal_check), ..State::new("home_agenda_check", View::PanelWide, Page::Home) },
+        State { calendar: Some(&cal_add), ..State::new("home_agenda_add", View::PanelWide, Page::Home) },
+        State { calendar: Some(&cal_remove), ..State::new("home_agenda_remove", View::PanelWide, Page::Home) },
+        State { calendar: Some(&cal_soon), ..State::new("home_agenda_soon", View::PanelWide, Page::Home) },
+        State { media: true, home_fx: Some(&track_change), ..State::new("home_track_change", View::Panel, Page::Home) },
+        State { media: true, home_fx: Some(&track_late), ..State::new("home_track_late", View::Panel, Page::Home) },
+        State { calendar: Some(&calendar), page_age: 0.22, ..State::new("home_enter", View::PanelWide, Page::Home) },
+        State { calendar: Some(&calendar), page_age: 0.42, ..State::new("home_enter_late", View::PanelWide, Page::Home) },
+        State { media: true, page_age: 0.25, ..State::new("home_enter_media", View::Panel, Page::Home) },
     ];
     for state in states {
         let mut renderer = Renderer::new(state.dpi, state.theme).unwrap();
@@ -426,10 +782,12 @@ fn preview_states() {
             alpha,
             eyes: state.eyes,
             shadow: state.shadow.unwrap_or(if state.view.is_panel() { 1.0 } else { 0.0 }),
-            time: "19:21",
+            time: state.time,
             date: "Senin, 19 Oktober 2026",
             day: "Rab 21 Okt 2026",
             greeting: "Selamat malam",
+            hour: state.hour,
+            home_fx: state.home_fx.unwrap_or(&STILL_HOME),
             battery: state.battery,
             media: state.media.then_some(if state.name == "player_seeking" { &seeking } else { &data.media }),
             lyric: state.lyric,
@@ -443,25 +801,37 @@ fn preview_states() {
             page: state.page,
             pages: state.pages,
             page_from: None,
-            shelf: &data.shelf,
+            page_age: state.page_age,
+            shelf: state.shelf.unwrap_or(&data.shelf),
             shelf_fx: state.fx.unwrap_or(&no_fx),
-            tasks: &data.tasks,
-            focus: if state.name.starts_with("mood") || state.name == "size_small" { &idle } else { &data.focus },
-            water: &data.water,
+            tasks: state.tasks.unwrap_or(&data.tasks),
+            task_fx: state.task_fx,
+            focus: match state.focus {
+                Some(focus) => focus,
+                None if state.name.starts_with("mood") || state.name == "size_small" || state.name.starts_with("pill_prayer") => &idle,
+                None => &data.focus,
+            },
+            water: state.water.unwrap_or(&data.water),
             privacy: &data.privacy,
-            system: Some(&data.system),
+            system: if state.name == "page_system_scan" { None } else { Some(state.stats.unwrap_or(&data.system)) },
+            trend: state.trend.unwrap_or(&data.trend),
             uptime: "3 j 12 m",
             hovered: state.hovered,
             seconds: 1.3,
             locked: state.locked,
-            timer: if state.name.contains("timer") && !state.name.ends_with("idle") { &running } else { &data.timer },
-            controls: if state.name.ends_with("muted") { &muted_controls } else { &data.controls },
+            timer: match state.timer {
+                Some(timer) => timer,
+                None if state.name.contains("timer") && !state.name.ends_with("idle") => &running,
+                None => &data.timer,
+            },
+            controls: state.controls.unwrap_or(if state.name.ends_with("muted") { &muted_controls } else { &data.controls }),
             weather: state.weather,
             city_draft: state.city_draft,
             calendar: state.calendar,
             agenda_draft: state.agenda_draft,
             download: state.download,
             call: state.call,
+            prayer: state.prayer,
             welcome: state.welcome,
         };
         renderer.draw(&scene).unwrap();
@@ -487,6 +857,8 @@ fn scene_for<'a>(data: &'a Sample, view: View, page: Page, media: bool) -> Scene
         date: "",
         day: "Rab 21 Okt 2026",
         greeting: "",
+        hour: 19,
+        home_fx: &STILL_HOME,
         battery: None,
         media: media.then_some(&data.media),
         lyric: None,
@@ -500,13 +872,16 @@ fn scene_for<'a>(data: &'a Sample, view: View, page: Page, media: bool) -> Scene
         page,
         pages: Pages::default(),
         page_from: None,
+        page_age: f32::MAX,
         shelf: &data.shelf,
         shelf_fx: &data.shelf_fx,
         tasks: &data.tasks,
+        task_fx: None,
         focus: &data.focus,
         water: &data.water,
         privacy: &data.privacy,
         system: None,
+        trend: &data.trend,
         uptime: "",
         hovered: None,
         seconds: 0.0,
@@ -519,8 +894,25 @@ fn scene_for<'a>(data: &'a Sample, view: View, page: Page, media: bool) -> Scene
         agenda_draft: None,
         download: None,
         call: None,
+        prayer: None,
         welcome: false,
     }
+}
+
+/// Tanpa kota, halaman Sholat punya tombol "Pilih kota"; dengan jadwal, tombol itu hilang.
+#[test]
+fn prayer_city_button() {
+    let data = sample();
+    let prayer = sample_prayer();
+    let renderer = Renderer::new(96, Theme::Black).unwrap();
+    let x0 = CANVAS.0 / 2.0 - View::Panel.size().0 / 2.0;
+    let mut scene = scene_for(&data, View::Panel, Page::Prayer, false);
+    renderer.draw(&scene).unwrap();
+    let button = x0 + MARGIN_FOR_TEST + 40.0;
+    assert_eq!(renderer.hit_at(button, 128.0), Some(Hit::PrayerCity));
+    scene.prayer = Some(&prayer);
+    renderer.draw(&scene).unwrap();
+    assert_eq!(renderer.hit_at(button, 128.0), None);
 }
 
 /// Tombol bisu panggilan bisa diklik di pil panggilan (di kiri, di tempat mata maskot) dan di
@@ -830,7 +1222,7 @@ fn lyrics_status_retry() {
     }
 }
 
-/// Pendaran bawah panel mengikuti warna sampul, dan tidak ada tanpa musik.
+/// Pendaran bawah panel mengikuti warna sampul; tanpa musik, warna waktu hari.
 #[test]
 fn glow_follows_album_colour() {
     let data = sample();
@@ -846,9 +1238,68 @@ fn glow_follows_album_colour() {
     };
     let channel = |px: u32, shift: u32| (px >> shift) & 0xFF;
     let (plain, glowing) = (probe(false), probe(true));
-    assert_eq!(channel(plain, 0), 0, "tanpa musik badan tetap hitam");
+    // Contoh jam 19.21: malam berwarna nila, biru paling kuat.
+    assert!(channel(plain, 0) > 20 && channel(plain, 0) > channel(plain, 8), "pendaran malam {plain:08X}");
     // Sampul contoh biru muda (0x4FC3F7): biru paling kuat, merah paling lemah.
     assert!(channel(glowing, 0) > 30 && channel(glowing, 0) > channel(glowing, 16), "pendaran {glowing:08X}");
+}
+
+/// Pendaran halaman Kontrol: oranye selama mikrofon bisu (juga kalau senyap), biru selama senyap
+/// saja, dan tidak ada kalau keduanya mati. Tombolnya tetap bisa diklik di tempatnya.
+#[test]
+fn controls_glow_follows_mic_and_quiet() {
+    let data = sample();
+    let (width, h) = View::Panel.size();
+    let probe = |mic: bool, quiet: Option<u32>| {
+        let view = ControlsView { mic: Some(mic), quiet_minutes: quiet, city: None, ..sample().controls };
+        let mut scene = scene_for(&data, View::Panel, Page::Controls, false);
+        scene.controls = &view;
+        let mut renderer = Renderer::new(96, Theme::Black).unwrap();
+        renderer.draw(&scene).unwrap();
+        let _ = unsafe { GdiFlush() };
+        let x0 = CANVAS.0 / 2.0 - width / 2.0;
+        let hits = (renderer.hit_at(x0 + MARGIN_FOR_TEST + 60.0, 128.0), renderer.hit_at(x0 + MARGIN_FOR_TEST + 188.0, 128.0));
+        assert_eq!(hits, (Some(Hit::MicToggle), Some(Hit::QuietToggle)));
+        let stride = renderer.surface.width as usize;
+        let x = (CANVAS.0 / 2.0 + 150.0) as usize;
+        renderer.surface.pixels()[(h as usize - 6) * stride + x]
+    };
+    let channel = |px: u32, shift: u32| (px >> shift) & 0xFF;
+    let (none, muted, quiet, both) = (probe(false, None), probe(true, None), probe(false, Some(42)), probe(true, Some(42)));
+    assert!(channel(none, 16) < 8 && channel(none, 0) < 8, "tanpa pendaran {none:08X}");
+    assert!(channel(muted, 16) > 30 && channel(muted, 16) > channel(muted, 0), "oranye {muted:08X}");
+    assert!(channel(quiet, 0) > 30 && channel(quiet, 0) > channel(quiet, 16), "biru {quiet:08X}");
+    let near = |a: u32, b: u32| [0, 8, 16].iter().all(|&shift| channel(a, shift).abs_diff(channel(b, shift)) <= 2);
+    assert!(near(both, muted), "oranye menang: {both:08X} vs {muted:08X}");
+}
+
+/// Selama sedotan "Bersihkan" ubin tidak bisa diklik; sesudahnya "Urungkan" bisa diklik di
+/// tempat "Bersihkan" tadi.
+#[test]
+fn shelf_vacuum_blocks_tiles_and_offers_undo() {
+    let data = sample();
+    let (width, _) = View::Panel.size();
+    let x0 = CANVAS.0 / 2.0 - width / 2.0;
+    let render = |shelf: &Shelf, fx: &ShelfFx| {
+        let mut scene = scene_for(&data, View::Panel, Page::Shelf, false);
+        scene.shelf = shelf;
+        scene.shelf_fx = fx;
+        let renderer = Renderer::new(96, Theme::Black).unwrap();
+        renderer.draw(&scene).unwrap();
+        renderer
+    };
+    let tile = (x0 + MARGIN_FOR_TEST + 34.0, 70.0);
+    let corner = (x0 + width - MARGIN_FOR_TEST - 20.0, 22.0);
+    let still = render(&data.shelf, &ShelfFx::default());
+    assert!(matches!(still.hit_at(tile.0, tile.1), Some(Hit::ShelfItem(_))));
+    assert_eq!(still.hit_at(corner.0, corner.1), Some(Hit::ShelfClear));
+    let sucking = render(&data.shelf, &ShelfFx { flow: Some((0.3, false)), ..ShelfFx::default() });
+    assert_eq!(sucking.hit_at(tile.0, tile.1), Some(Hit::ShelfStrip));
+    assert_eq!(sucking.hit_at(corner.0, corner.1), None);
+    let empty = Shelf::default();
+    let undo = render(&empty, &ShelfFx { undo: true, ..ShelfFx::default() });
+    assert_eq!(undo.hit_at(corner.0, corner.1), Some(Hit::ShelfUndo));
+    assert_eq!(render(&empty, &ShelfFx::default()).hit_at(corner.0, corner.1), None);
 }
 
 /// Tombol × agenda harus bisa dicapai: kursor yang bergerak dari lingkaran melewati teks baris

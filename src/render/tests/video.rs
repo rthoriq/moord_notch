@@ -657,6 +657,8 @@ impl Cast {
                 short: "4m".into(),
                 progress: 0.26,
                 total_minutes: 5,
+                ending: false,
+                fx: None,
             },
         }
     }
@@ -859,6 +861,11 @@ fn scene_drop(studio: &mut Studio, cast: &Cast, t: f64) {
         dash: (t * 5.0 % 5.0) as f32,
         glow: (first_drop..first_drop + 0.7).contains(&t).then(|| span(t, first_drop, 0.7)),
         tiles: HashMap::new(),
+        slots: HashMap::new(),
+        flow: None,
+        emptied: None,
+        undo: false,
+        lean: 0.0,
     };
     let mut scene = home(&data, &cast.idle, &cast.none, View::Panel, Page::Shelf, false);
     scene.shelf_fx = &fx;

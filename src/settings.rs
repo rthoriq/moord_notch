@@ -2,6 +2,7 @@
 
 use crate::store;
 use crate::widgets::Pages;
+use crate::widgets::prayer::{OFFSET_RANGE, Offsets};
 
 const FILE: &str = "settings.txt";
 
@@ -141,6 +142,12 @@ pub struct Settings {
     pub compact_hud: bool,
     /// Beranda lebar dengan kalender dan agenda di kanannya.
     pub calendar: bool,
+    /// Kabar dan bunyi saat masuk waktu sholat.
+    pub prayer_reminder: bool,
+    /// Hitung mundur di pil 10 menit sebelum waktu sholat. Mati secara default.
+    pub prayer_countdown: bool,
+    /// Koreksi menit Subuh, Dzuhur, Ashar, Maghrib, dan Isya.
+    pub prayer_offsets: Offsets,
     /// Pil tetap utuh saat jendela di-maximize, tidak mengecil jadi garis tipis. Full-screen
     /// sungguhan (video, game, presentasi) tetap menyembunyikan notch.
     pub keep_pill: bool,
@@ -177,6 +184,9 @@ impl Default for Settings {
             compact_hud: true,
             calendar: true,
             keep_pill: false,
+            prayer_reminder: true,
+            prayer_countdown: false,
+            prayer_offsets: [0; 5],
             lyric_panel: false,
             messages: Messages::default(),
             hide_content: false,
@@ -225,6 +235,13 @@ impl Settings {
                 "kabar-ringkas" => settings.compact_hud = yes,
                 "kalender" => settings.calendar = yes,
                 "tetap-tampil" => settings.keep_pill = yes,
+                "pengingat-sholat" => settings.prayer_reminder = yes,
+                "hitung-mundur-sholat" => settings.prayer_countdown = yes,
+                "koreksi-sholat" => {
+                    for (slot, value) in settings.prayer_offsets.iter_mut().zip(value.split(',')) {
+                        *slot = value.trim().parse::<i8>().unwrap_or(0).clamp(*OFFSET_RANGE.start(), *OFFSET_RANGE.end());
+                    }
+                }
                 "panel-lirik" => settings.lyric_panel = yes,
                 "sambutan" => settings.welcomed = yes,
                 "halaman" => settings.pages = Pages::parse(value),
@@ -268,6 +285,9 @@ impl Settings {
             format!("kabar-ringkas={}", yes(self.compact_hud)),
             format!("kalender={}", yes(self.calendar)),
             format!("tetap-tampil={}", yes(self.keep_pill)),
+            format!("pengingat-sholat={}", yes(self.prayer_reminder)),
+            format!("hitung-mundur-sholat={}", yes(self.prayer_countdown)),
+            format!("koreksi-sholat={}", self.prayer_offsets.map(|m| m.to_string()).join(",")),
             format!("panel-lirik={}", yes(self.lyric_panel)),
             format!("pesan={}", self.messages.key()),
             format!("sembunyikan-isi={}", yes(self.hide_content)),
@@ -303,6 +323,9 @@ mod tests {
             compact_hud: false,
             calendar: false,
             keep_pill: true,
+            prayer_reminder: false,
+            prayer_countdown: true,
+            prayer_offsets: [2, 0, -1, 3, -3],
             lyric_panel: true,
             messages: Messages::AllChat,
             hide_content: true,
@@ -318,5 +341,8 @@ mod tests {
         // File lama dari tahap 4 tetap terbaca.
         let old = vec!["lirik=ya".to_string(), "tema=hitam".to_string()];
         assert!(Settings::parse(&old).lyrics && Settings::parse(&old).sound);
+        // Koreksi di luar pilihan dibatasi, yang tidak terbaca jadi 0.
+        let odd = vec!["koreksi-sholat=9,x,-2".to_string()];
+        assert_eq!(Settings::parse(&odd).prayer_offsets, [3, 0, -2, 0, 0]);
     }
 }

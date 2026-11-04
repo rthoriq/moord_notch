@@ -28,7 +28,7 @@ impl Date {
     }
 
     /// Hari ke-sekian sejak 1970-01-01 (algoritma "days from civil" Howard Hinnant).
-    fn days(self) -> i64 {
+    pub fn days(self) -> i64 {
         let y = self.year as i64 - if self.month <= 2 { 1 } else { 0 };
         let era = y.div_euclid(400);
         let yoe = y - era * 400;
@@ -184,6 +184,15 @@ impl Agenda {
     /// Agenda yang jatuh tepat pada menit ini dan belum selesai, untuk pengingat.
     pub fn due(&self, date: Date, hour: u32, minute: u32) -> Vec<&Event> {
         self.events.iter().filter(|e| e.date == date && e.time == Some((hour, minute)) && !e.done).collect()
+    }
+
+    /// Gulir seperlunya supaya agenda ke-`index` hari itu terlihat.
+    pub fn reveal(&mut self, index: usize) {
+        if index < self.scroll {
+            self.scroll = index;
+        } else if index >= self.scroll + VISIBLE {
+            self.scroll = index + 1 - VISIBLE;
+        }
     }
 
     pub fn scroll_by(&mut self, step: i32, count: usize) {

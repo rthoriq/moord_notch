@@ -23,7 +23,7 @@ fn tile(slot: usize) -> (f32, f32) {
 }
 
 fn shelf_fx(targeted: bool, share: bool, t: f64, glow: Option<f32>) -> ShelfFx {
-    ShelfFx { targeted, share_targeted: share, dash: (t * 5.0 % 5.0) as f32, glow, tiles: HashMap::new() }
+    ShelfFx { targeted, share_targeted: share, dash: (t * 5.0 % 5.0) as f32, glow, tiles: HashMap::new(), slots: HashMap::new(), flow: None, emptied: None, undo: false, lean: 0.0 }
 }
 
 // ---------------------------------------------------------------- 14. seret dan lepas

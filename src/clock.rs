@@ -1,13 +1,18 @@
 //! Waktu lokal dalam format Indonesia.
 
+use windows::Globalization::{Calendar, CalendarIdentifiers};
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
-use windows::Win32::System::SystemInformation::{GetLocalTime, GetTickCount64};
+use windows::Win32::System::SystemInformation::{GetLocalTime, GetSystemTime, GetTickCount64};
 use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToFileTime};
 
 const HARI: [&str; 7] = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
 const BULAN: [&str; 12] = [
     "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September",
     "Oktober", "November", "Desember",
+];
+const BULAN_HIJRIAH: [&str; 12] = [
+    "Muharram", "Safar", "Rabiul Awal", "Rabiul Akhir", "Jumadil Awal", "Jumadil Akhir", "Rajab",
+    "Syakban", "Ramadan", "Syawal", "Zulkaidah", "Zulhijah",
 ];
 /// Satu hari dalam satuan FILETIME (100 nanodetik).
 const DAY_TICKS: u64 = 24 * 60 * 60 * 10_000_000;
@@ -86,6 +91,29 @@ pub fn duration(seconds: f64) -> String {
     let total = seconds.max(0.0) as u64;
     let (h, m, s) = (total / 3600, total / 60 % 60, total % 60);
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+/// Selisih jam laptop dari UTC dalam menit, misal 480 untuk WITA.
+pub fn utc_offset_minutes() -> i32 {
+    let ticks = |t: SYSTEMTIME| {
+        let mut ft = FILETIME::default();
+        unsafe { SystemTimeToFileTime(&t, &mut ft) }.ok()?;
+        Some((((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64) as i64)
+    };
+    match (ticks(now()), ticks(unsafe { GetSystemTime() })) {
+        (Some(local), Some(utc)) => ((local - utc) as f64 / 600_000_000.0).round() as i32,
+        _ => 0,
+    }
+}
+
+/// Tanggal Hijriah hari ini menurut kalender Umm al-Qura bawaan Windows, misal
+/// "10 Jumadil Awal 1448 H". Bisa berbeda sehari dari penetapan Kemenag.
+pub fn hijri() -> Option<String> {
+    let calendar = Calendar::new().ok()?;
+    calendar.ChangeCalendarSystem(&CalendarIdentifiers::UmAlQura().ok()?).ok()?;
+    calendar.SetToNow().ok()?;
+    let month = BULAN_HIJRIAH.get(calendar.Month().ok()?.checked_sub(1)? as usize)?;
+    Some(format!("{} {month} {} H", calendar.Day().ok()?, calendar.Year().ok()?))
 }
 
 /// Milidetik sampai menit berikutnya, plus sedikit jeda supaya pasti sudah lewat.

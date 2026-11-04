@@ -5,7 +5,50 @@
 //!
 //! Modul ini berisi inti dan alat gambar dasarnya; tata letak tiap halaman ada di `pages`.
 
+mod checklist;
+mod gauge;
+mod glass;
+mod hourglass;
+mod mixer;
 mod pages;
+mod rack;
+mod sky;
+mod today;
+mod tomato;
+mod vacuum;
+
+pub use checklist::fx_secs as task_fx_secs;
+pub use glass::{pour_secs, shown_level};
+pub use hourglass::fx_secs as timer_fx_secs;
+pub use mixer::{GLIDE_SECS as SLIDER_GLIDE_SECS, MUTE_SECS, SWITCH_SECS, glide as slider_glide};
+pub use rack::{
+    DROP_GAP as TILE_DROP_GAP, DROP_SECS as TILE_DROP_SECS, LIFT_SECS as TILE_LIFT_SECS, SLIDE_SECS as SHELF_SLIDE_SECS,
+    slide_ease as shelf_slide_ease,
+};
+pub use today::{
+    ART_SECS, CLOCK_ROLL_SECS, DAY_SPAN as CALENDAR_SPAN, SLIDE_SECS as CALENDAR_SLIDE_SECS, TRACK_SECS, agenda_fx_secs,
+    slide_ease as calendar_ease,
+};
+pub use tomato::fx_secs as focus_fx_secs;
+pub use vacuum::{
+    LEAN_SECS as SHELF_LEAN_SECS, REVEAL_SECS as SHELF_REVEAL_SECS, lean_ease as shelf_lean_ease,
+    spit_secs as shelf_spit_secs, vacuum_secs as shelf_vacuum_secs,
+};
+pub use gauge::SCAN_SECS as SYSTEM_SCAN_SECS;
+
+/// Riwayat CPU yang digambar di halaman Sistem, dalam detik.
+pub const CPU_HISTORY: usize = 30;
+
+/// Tambahan halaman Sistem yang dikumpulkan selama halaman itu terbuka.
+#[derive(Default)]
+pub struct SystemTrend {
+    /// CPU (persen) tiap detik, terlama dulu; paling banyak [`CPU_HISTORY`].
+    pub cpu: Vec<f32>,
+    /// Berganti tiap data baru tiba, untuk titik "langsung".
+    pub beat: bool,
+    /// Detik sejak mulai menunggu data pertama, selama masih menunggu.
+    pub scan: Option<f32>,
+}
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -61,6 +104,7 @@ use crate::sysinfo::Stats;
 use crate::thumbnail::Thumbnail;
 use crate::widgets::{Page, Pages};
 use crate::widgets::focus::Phase;
+use crate::widgets::prayer::Sky;
 use crate::widgets::shelf::Shelf;
 use crate::widgets::tasks::Tasks;
 
@@ -144,6 +188,8 @@ pub enum Hud {
     Mic { muted: bool },
     /// Panggilan selesai setelah `length`, misal "42 menit".
     CallEnded { app: String, length: String },
+    /// Masuk waktu sholat, misal "Ashar" pukul "15:21" di "Palopo".
+    Prayer { name: &'static str, time: String, city: String },
 }
 
 /// Ekspresi maskot.
@@ -201,6 +247,8 @@ pub enum Hit {
     ShelfItem(u64),
     ShelfRemove(u64),
     ShelfClear,
+    /// "Urungkan" sesaat setelah shelf dibersihkan: isinya kembali.
+    ShelfUndo,
     /// Tombol "Pengaturan" di kepala halaman kontrol cepat.
     OpenSettings,
     FocusToggle,
@@ -242,6 +290,8 @@ pub enum Hit {
     DropShare,
     /// Tombol "Mengerti" di sambutan pertama kali.
     WelcomeDone,
+    /// Tombol "Pilih kota" di halaman Sholat yang belum punya kota.
+    PrayerCity,
 }
 
 impl Hit {
@@ -292,8 +342,20 @@ pub struct FocusView {
     pub progress: f32,
     pub sessions: u32,
     pub minutes_left: u32,
+    /// Animasi sesaat yang sedang berjalan dan detik sejak mulainya.
+    pub fx: Option<(FocusFx, f32)>,
 }
 
+/// Animasi sesaat di halaman Pomodoro.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FocusFx {
+    /// Mulai dari awal: cincin diputar penuh lalu kembali, seperti kenop timer dapur.
+    Wind,
+    /// Fase ini baru selesai: cincin berkilau; selesai fokus juga menjatuhkan tomat baru.
+    Done(Phase),
+}
+
+#[derive(Clone)]
 pub struct TimerView {
     pub running: bool,
     /// Berjalan atau dijeda.
@@ -304,6 +366,98 @@ pub struct TimerView {
     pub short: String,
     pub progress: f32,
     pub total_minutes: u32,
+    /// Tinggal detik-detik terakhir: cincin, angka, dan pendarannya memerah.
+    pub ending: bool,
+    /// Animasi sesaat di halaman Timer dan umurnya (detik).
+    pub fx: Option<(TimerFx, f32)>,
+}
+
+/// Animasi sesaat di halaman Timer.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum TimerFx {
+    /// Durasi dipilih: jam pasir dibalik, lalu pasirnya mulai turun.
+    Flip,
+    /// "+1 mnt" menjatuhkan sedikit pasir ke atas; berisi kemajuan sebelum ditambah.
+    Add(f32),
+    /// Waktu habis selagi halaman Timer terbuka: jam pasir bergoyang, cincin berkilau.
+    Done,
+}
+
+/// Perubahan daftar tugas yang dianimasikan: baris meluncur dari tempat lamanya ke tempat baru,
+/// centang tergambar, dan tugas yang dihapus memudar.
+#[derive(Clone, Debug)]
+pub struct TaskFx {
+    pub change: TaskChange,
+    /// Baris tampil sebelumnya untuk tiap tugas sekarang (urut indeks); `None` untuk tugas baru.
+    pub rows: Vec<Option<usize>>,
+    /// Gulir daftar sebelum berubah.
+    pub scroll: usize,
+    /// Tugas yang baru dihapus: teks, sudah selesai, dan baris tampilnya.
+    pub gone: Vec<(String, bool, usize)>,
+    /// Bagian tugas yang selesai sebelum berubah, untuk cincin kemajuan.
+    pub progress: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TaskChange {
+    /// Tugas ini dicentang; `last` = tidak ada lagi yang tersisa (konfeti).
+    Check { index: usize, last: bool },
+    Uncheck(usize),
+    Add,
+    Remove,
+    ClearDone,
+}
+
+/// Animasi sesaat di Beranda.
+#[derive(Default)]
+pub struct HomeFx {
+    /// Jam dan tanggal sebelum menit berganti, dan umur gulirannya (detik).
+    pub clock: Option<(String, String, f32)>,
+    /// Lagu yang baru digantikan dan umur peralihannya (detik).
+    pub track: Option<(TrackFx, f32)>,
+    /// Umur peralihan sampul yang baru berganti (detik).
+    pub art: Option<f32>,
+}
+
+/// Lagu sebelumnya selama lagu berganti.
+#[derive(Clone)]
+pub struct TrackFx {
+    pub title: String,
+    pub artist: String,
+    pub progress: Option<f32>,
+    /// Arah lagu baru masuk: 1 dari kanan (lagu berikutnya), -1 dari kiri (lagu sebelumnya).
+    pub dir: f32,
+}
+
+/// Peralihan kalender dari hari yang dipilih sebelumnya.
+pub struct DayShift {
+    /// Kemajuan, 0..1.
+    pub t: f32,
+    /// 1 = pindah ke hari sesudahnya, -1 = ke hari sebelumnya.
+    pub dir: f32,
+    /// Agenda hari sebelumnya yang tadi terlihat.
+    pub events: Vec<AgendaItem>,
+    /// Bulan dan tahun hari sebelumnya, kalau bulannya berbeda.
+    pub month: Option<(String, String)>,
+}
+
+/// Perubahan agenda yang dianimasikan: agenda meluncur dari baris lamanya, centang tergambar,
+/// dan agenda yang dihapus memudar.
+#[derive(Clone, Debug)]
+pub struct AgendaFx {
+    pub change: AgendaChange,
+    /// Baris tampil sebelumnya tiap agenda yang tetap ada (0 = baris teratas yang terlihat).
+    pub rows: Vec<(u64, f32)>,
+    /// Agenda yang baru dihapus dan baris tampilnya.
+    pub gone: Option<(AgendaItem, f32)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AgendaChange {
+    Check(u64),
+    Uncheck(u64),
+    Add(u64),
+    Remove,
 }
 
 /// Kolom kalender di Beranda lebar.
@@ -311,11 +465,18 @@ pub struct CalendarView {
     /// Bulan dan tahun hari yang dipilih, misal "Okt" dan "2026".
     pub month: String,
     pub year: String,
-    /// Lima hari berurutan, hari yang dipilih di tengah.
+    /// Hari-hari berurutan di sekitar hari yang dipilih (`CALENDAR_SPAN` hari ke tiap sisi);
+    /// lima di tengahnya yang terlihat.
     pub days: Vec<DayView>,
     /// Agenda hari yang dipilih.
     pub events: Vec<AgendaItem>,
     pub scroll: usize,
+    /// Tengah deretan hari yang sedang meluncur, relatif terhadap hari yang dipilih (0 = diam).
+    pub center: f32,
+    /// Peralihan dari hari sebelumnya, selama deretannya meluncur.
+    pub shift: Option<DayShift>,
+    /// Perubahan agenda yang sedang dianimasikan dan umurnya (detik).
+    pub agenda_fx: Option<(AgendaFx, f32)>,
 }
 
 pub struct DayView {
@@ -328,12 +489,16 @@ pub struct DayView {
     pub has_events: bool,
 }
 
+#[derive(Clone, Debug)]
 pub struct AgendaItem {
     pub id: u64,
-    /// "09.00", atau kosong untuk sepanjang hari.
+    /// "09.00", kosong untuk sepanjang hari, atau hitung mundur (misal "15 mnt lagi") kalau
+    /// `soon`.
     pub time: String,
     pub text: String,
     pub done: bool,
+    /// Agenda hari ini yang mulai kurang dari sejam lagi.
+    pub soon: bool,
 }
 
 /// Angka kabar yang sedang bergulir ke nilai baru (misal volume 62 → 63).
@@ -355,8 +520,8 @@ pub fn hud_value(hud: &Hud) -> Option<String> {
     }
 }
 
-/// Animasi shelf: area lepas saat file diseret, pendaran sesudah dilepas, dan ubin yang
-/// muncul atau menghilang.
+/// Animasi shelf: area lepas saat file diseret, pendaran sesudah dilepas, ubin yang muncul
+/// atau menghilang, dan sedotan "Bersihkan".
 #[derive(Default)]
 pub struct ShelfFx {
     /// File sedang diseret tepat di atas area lepas shelf, atau di atas zona Bagikan.
@@ -366,8 +531,20 @@ pub struct ShelfFx {
     pub dash: f32,
     /// Pendaran sesudah file dilepas, 0..1 (1 = selesai).
     pub glow: Option<f32>,
-    /// Skala dan transparansi ubin yang sedang muncul atau menghilang.
-    pub tiles: HashMap<u64, (f32, f32)>,
+    /// Ubin yang sedang jatuh ke rak atau terangkat keluar: umur animasinya (detik, negatif =
+    /// belum giliran jatuh) dan apakah ia sedang dihapus.
+    pub tiles: HashMap<u64, (f32, bool)>,
+    /// Posisi ubin yang sedang merapat atau digulir, dalam slot (0 = paling kiri yang terlihat).
+    pub slots: HashMap<u64, f32>,
+    /// "Bersihkan" sedang menyedot ubin ke tulisannya (`false`), atau "Urungkan" sedang
+    /// memuntahkannya kembali (`true`): umur animasinya (detik).
+    pub flow: Option<(f32, bool)>,
+    /// Shelf baru saja kosong sesudah sedotan: umur tampilan kosongnya (detik).
+    pub emptied: Option<f32>,
+    /// "Urungkan" masih tersedia.
+    pub undo: bool,
+    /// Ubin condong ke "Bersihkan" selama kursor di atasnya, 0..1.
+    pub lean: f32,
 }
 
 /// Panggilan yang sedang berlangsung, untuk pil dan Beranda.
@@ -393,6 +570,20 @@ pub struct ControlsView {
     pub quiet_minutes: Option<u32>,
     /// Tulisan tombol kota cuaca; `None` kalau cuaca dimatikan.
     pub city: Option<String>,
+    pub fx: ControlsFx,
+}
+
+/// Animasi sesaat di halaman Kontrol; umur dalam detik.
+#[derive(Clone, Copy, Default)]
+pub struct ControlsFx {
+    /// Slider volume dan kecerahan yang meluncur ke nilainya: nilai yang tampil saat mulai, dan
+    /// umurnya.
+    pub volume: Option<(f32, f32)>,
+    pub brightness: Option<(f32, f32)>,
+    /// Bisu speaker, bisu mikrofon, dan senyap baru saja berganti.
+    pub mute: Option<f32>,
+    pub mic: Option<f32>,
+    pub quiet: Option<f32>,
 }
 
 pub struct WaterView {
@@ -402,6 +593,34 @@ pub struct WaterView {
     pub week: Vec<(u32, char)>,
     /// Jam pengingat berikutnya, misal "19:37".
     pub next: Option<String>,
+    /// Gelas yang sedang dituang (naik) atau dibatalkan (turun): isi sebelumnya (0..1 dari
+    /// target) dan detik sejak dimulai.
+    pub pour: Option<(f32, f32)>,
+}
+
+/// Halaman Sholat.
+pub struct PrayerView {
+    pub city: String,
+    /// Tanggal Hijriah, misal "10 Jumadil Awal 1448 H".
+    pub hijri: String,
+    /// Imsak sampai Isya: nama, jam (misal "04:31"), dan sudah lewat atau belum.
+    pub times: Vec<(&'static str, String, bool)>,
+    /// Waktu sholat berikutnya: indeksnya di `times`, nama, dan jamnya.
+    pub next: usize,
+    pub next_name: &'static str,
+    pub next_time: String,
+    /// Waktu berikutnya baru besok (Isya sudah lewat); `times` berisi jadwal besok.
+    pub tomorrow: bool,
+    /// Sisa waktu, misal "1 jam 12 menit".
+    pub left: String,
+    /// Waktu sholat yang sedang berlangsung.
+    pub current: Option<&'static str>,
+    /// Kemajuan dari waktu sholat sebelumnya ke berikutnya, 0..1.
+    pub progress: f32,
+    /// Hitung mundur di pil, misal "8m", kalau tinggal 10 menit atau kurang.
+    pub soon: Option<String>,
+    /// Suasana langit saat ini: warna halaman, ikon cincin, dan bintang.
+    pub sky: Sky,
 }
 
 /// Apa yang harus digambar pada satu frame.
@@ -418,6 +637,10 @@ pub struct Scene<'a> {
     /// Tanggal singkat untuk kepala pemutar, misal "Rab 21 Okt 2026".
     pub day: &'a str,
     pub greeting: &'a str,
+    /// Jam sekarang (0..23), untuk warna pendaran Beranda.
+    pub hour: u32,
+    /// Animasi sesaat di Beranda.
+    pub home_fx: &'a HomeFx,
     /// Persen baterai dan sedang mengisi atau tidak; `None` di PC tanpa baterai.
     pub battery: Option<(u32, bool)>,
     pub media: Option<&'a MediaView>,
@@ -440,14 +663,20 @@ pub struct Scene<'a> {
     pub pages: Pages,
     /// Halaman sebelumnya selama perpindahan: (halaman, progres 0..1, arah ±1).
     pub page_from: Option<(Page, f32, f32)>,
+    /// Detik sejak halaman `page` dibuka (pindah halaman atau panel terbuka), untuk animasi masuk
+    /// khas tiap halaman; `f32::MAX` kalau animasinya sudah selesai atau efek animasi dimatikan.
+    pub page_age: f32,
     pub shelf: &'a Shelf,
     pub shelf_fx: &'a ShelfFx,
     pub tasks: &'a Tasks,
+    /// Perubahan daftar tugas yang sedang dianimasikan dan umurnya (detik).
+    pub task_fx: Option<(&'a TaskFx, f32)>,
     pub focus: &'a FocusView,
     pub water: &'a WaterView,
     pub privacy: &'a Usage,
     /// Hasil pengukuran terakhir; `None` sebelum yang pertama tiba.
     pub system: Option<&'a Stats>,
+    pub trend: &'a SystemTrend,
     /// Lama komputer menyala, misal "3 j 12 m".
     pub uptime: &'a str,
     /// Laptop terkunci: panel hanya menampilkan jam/musik, tanpa navigasi halaman.
@@ -462,6 +691,8 @@ pub struct Scene<'a> {
     pub download: Option<&'a str>,
     /// Panggilan aktif: menggantikan isi pil dan jam/pemutar di Beranda.
     pub call: Option<&'a CallView>,
+    /// Jadwal sholat; `None` kalau kota belum dipilih atau jadwalnya tidak bisa dihitung.
+    pub prayer: Option<&'a PrayerView>,
     /// Kolom kalender; `None` = Beranda biasa (kalender dimatikan atau di lock screen).
     pub calendar: Option<&'a CalendarView>,
     /// Agenda yang sedang diketik.
@@ -574,6 +805,8 @@ const ORANGE: D2D1_COLOR_F = rgb(0xFF9F0A, 1.0);
 /// Biru air dan Bluetooth.
 const BLUE: D2D1_COLOR_F = rgb(0x0A84FF, 1.0);
 const BLUE_LIGHT: D2D1_COLOR_F = rgb(0x409CFF, 1.0);
+/// Hijau toska untuk waktu sholat.
+const TEAL: D2D1_COLOR_F = rgb(0x40C8E0, 1.0);
 const ICON_BG: D2D1_COLOR_F = rgb(0x1C1C1E, 1.0);
 const ICON_EYE: D2D1_COLOR_F = rgb(0xF5F5F7, 1.0);
 
@@ -597,7 +830,6 @@ const ICON_DOCUMENT: char = '\u{E8A5}';
 const ICON_STOPWATCH: char = '\u{E916}';
 const ICON_REFRESH: char = '\u{E72C}';
 const ICON_CLOSE: char = '\u{E711}';
-const ICON_CHECK: char = '\u{E73E}';
 const ICON_TASKS: char = '\u{E9D5}';
 const ICON_SYSTEM: char = '\u{E9D9}';
 const ICON_CAMERA: char = '\u{E722}';
@@ -611,6 +843,8 @@ const ICON_TIMER: char = '\u{E121}';
 const ICON_CONTROLS: char = '\u{E713}';
 const ICON_CALENDAR: char = '\u{E787}';
 const ICON_SHARE: char = '\u{E72D}';
+/// Bulan sabit untuk halaman dan kabar sholat.
+const ICON_PRAYER: char = '\u{E708}';
 const ICON_CHEVRON_LEFT: char = '\u{E76B}';
 const ICON_CHEVRON_RIGHT: char = '\u{E76C}';
 const ICON_CHEVRON_UP: char = '\u{E70E}';
@@ -634,6 +868,8 @@ pub struct Renderer {
     pal: Palette,
     /// Sampul album yang sedang dipakai, beserta id-nya supaya tidak dibuat ulang.
     art: Option<(u64, ID2D1BitmapBrush)>,
+    /// Sampul sebelumnya (`None` = kotak not balok), untuk peralihan pudar saat sampul berganti.
+    art_prev: Option<ID2D1BitmapBrush>,
     /// Thumbnail shelf per id item: kuas, lebar, tinggi.
     thumbs: HashMap<u64, (ID2D1BitmapBrush, f32, f32)>,
     /// Logo aplikasi chat per AppUserModelID.
@@ -758,6 +994,7 @@ impl Renderer {
                 dpi,
                 pal: palette(theme),
                 art: None,
+                art_prev: None,
                 thumbs: HashMap::new(),
                 logos: HashMap::new(),
                 hits: RefCell::new(Vec::new()),
@@ -810,15 +1047,18 @@ impl Renderer {
         Some(((x - area.left) / (area.right - area.left).max(1.0)).clamp(0.0, 1.0))
     }
 
-    /// Ganti sampul album. Bitmap hanya dibuat ulang kalau sampulnya memang baru.
-    pub fn set_art(&mut self, art: Option<&Art>) {
+    /// Ganti sampul album. Bitmap hanya dibuat ulang kalau sampulnya memang baru; sampul lama
+    /// disimpan untuk peralihan pudar. `true` kalau sampulnya berganti.
+    pub fn set_art(&mut self, art: Option<&Art>) -> bool {
         let Some(art) = art else {
-            self.art = None;
-            return;
+            let changed = self.art.is_some();
+            self.art_prev = self.art.take().map(|(_, brush)| brush);
+            return changed;
         };
         if self.art.as_ref().is_some_and(|(id, _)| *id == art.id) {
-            return;
+            return false;
         }
+        self.art_prev = self.art.take().map(|(_, brush)| brush);
         self.art = match self.bitmap_brush(ART_PX, ART_PX, &art.pixels) {
             Ok(brush) => Some((art.id, brush)),
             Err(e) => {
@@ -826,6 +1066,7 @@ impl Renderer {
                 None
             }
         };
+        true
     }
 
     pub fn set_thumbnail(&mut self, thumb: &Thumbnail) {
@@ -1049,14 +1290,25 @@ impl Renderer {
     }
 
     /// Pendaran warna dari bawah panel, seperti notch di Mac yang memantulkan sampul lagu:
-    /// warna sampul di pemutar musik, oranye selama timer berjalan, merah/hijau selama pomodoro
-    /// berjalan. Ikut memudar saat berpindah halaman.
+    /// warna sampul di pemutar musik (tanpa musik, warna waktu hari), oranye selama timer berjalan (merah di detik-detik
+    /// terakhir), merah/hijau selama pomodoro berjalan, oranye/biru selama mikrofon bisu/senyap.
+    /// Ikut memudar saat berpindah halaman.
     fn panel_glow(&self, s: &Scene, shape: &ID2D1PathGeometry, h: f32, alpha: f32) {
         // Merah/oranye lebih menyala daripada warna sampul, jadi dibuat sedikit lebih tipis.
         let color = |page: Page| match page {
-            Page::Home => s.media.and_then(|m| m.accent).map(|c| (rgb(c, 1.0), 1.0)),
-            Page::Timer if s.timer.active => Some((ORANGE, 0.7)),
+            Page::Home => today::glow(s),
+            Page::Timer => hourglass::glow(s.timer),
             Page::Focus if s.focus.active => Some((phase_color(s.focus.phase), 0.7)),
+            // Makin terang mendekati target, mengikuti air di gelas.
+            Page::Water => Some((BLUE, 0.25 + 0.45 * water_shown(s))),
+            Page::System => s.system.map(|st| {
+                let (color, strength) = gauge::load_glow(st);
+                (color, strength * smooth(entering(s, Page::System) / 0.6))
+            }),
+            Page::Prayer => s.prayer.map(|v| (sky::sky_color(v.sky), sky::glow(v.sky, entering(s, Page::Prayer)))),
+            Page::Tasks => checklist::glow(s),
+            Page::Shelf => rack::glow(s, self.pal.accent),
+            Page::Controls => mixer::glow(s, self.pal.accent),
             _ => None,
         };
         let pages = match s.page_from {
@@ -1147,9 +1399,14 @@ impl Renderer {
 
     /// Sampul album bersudut bulat; kotak dengan not balok kalau belum ada.
     fn art(&self, x: f32, y: f32, size: f32, radius: f32, alpha: f32) {
+        self.art_from(self.art.as_ref().map(|(_, brush)| brush), x, y, size, radius, alpha);
+    }
+
+    /// Sampul dari `brush`, atau kotak dengan not balok.
+    fn art_from(&self, brush: Option<&ID2D1BitmapBrush>, x: f32, y: f32, size: f32, radius: f32, alpha: f32) {
         let area = rect(x, y, x + size, y + size);
-        match &self.art {
-            Some((_, brush)) => self.fill_bitmap(brush, area, size / ART_PX as f32, radius, alpha),
+        match brush {
+            Some(brush) => self.fill_bitmap(brush, area, size / ART_PX as f32, radius, alpha),
             None => {
                 self.rounded(area, radius, self.pal.placeholder, alpha);
                 let font = if size > 30.0 { &self.fonts.icon_22 } else { &self.fonts.icon_13 };
@@ -1449,17 +1706,36 @@ impl Renderer {
         self.set_offset(0.0, 0.0);
     }
 
-    /// Gambar `paint` diperbesar/diperkecil `scale` kali di sekitar (`cx`, `cy`), di atas
-    /// transformasi yang sedang berlaku (misal ubin shelf yang muncul atau disorot).
-    fn scaled(&self, cx: f32, cy: f32, scale: f32, paint: impl FnOnce()) {
-        if (scale - 1.0).abs() < 0.001 {
+    /// Gambar `paint` diperbesar/diperkecil `scale` kali di sekitar (`cx`, `cy`) lalu digeser
+    /// tegak `dy`, di atas transformasi yang sedang berlaku (misal ubin shelf yang disorot atau
+    /// jatuh ke rak).
+    fn placed(&self, cx: f32, cy: f32, scale: f32, dy: f32, paint: impl FnOnce()) {
+        if (scale - 1.0).abs() < 0.001 && dy.abs() < 0.001 {
             paint();
             return;
         }
         unsafe {
             let mut current = Matrix3x2::default();
             self.target.GetTransform(&mut current);
-            let local = Matrix3x2 { M11: scale, M12: 0.0, M21: 0.0, M22: scale, M31: cx * (1.0 - scale), M32: cy * (1.0 - scale) };
+            let local = Matrix3x2 { M11: scale, M12: 0.0, M21: 0.0, M22: scale, M31: cx * (1.0 - scale), M32: cy * (1.0 - scale) + dy };
+            self.target.SetTransform(&(local * current));
+            paint();
+            self.target.SetTransform(&current);
+        }
+    }
+
+    /// Gambar `paint` diputar `angle` radian searah jarum jam di sekitar (`cx`, `cy`), di atas
+    /// transformasi yang sedang berlaku (misal jam pasir di halaman Timer yang dibalik).
+    fn rotated(&self, cx: f32, cy: f32, angle: f32, paint: impl FnOnce()) {
+        if angle.abs() < 0.0001 {
+            paint();
+            return;
+        }
+        let (sin, cos) = angle.sin_cos();
+        unsafe {
+            let mut current = Matrix3x2::default();
+            self.target.GetTransform(&mut current);
+            let local = Matrix3x2 { M11: cos, M12: sin, M21: -sin, M22: cos, M31: cx - cx * cos + cy * sin, M32: cy - cx * sin - cy * cos };
             self.target.SetTransform(&(local * current));
             paint();
             self.target.SetTransform(&current);
@@ -1676,6 +1952,17 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+/// Mulus di awal dan akhir; `t` di luar 0..1 dijepit.
+fn smooth(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Cepat di awal, melambat di akhir.
+fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
 fn translation(x: f32, y: f32) -> Matrix3x2 {
     Matrix3x2 { M11: 1.0, M12: 0.0, M21: 0.0, M22: 1.0, M31: x, M32: y }
 }
@@ -1709,6 +1996,33 @@ const fn rgb(hex: u32, a: f32) -> D2D1_COLOR_F {
 
 fn with_alpha(color: D2D1_COLOR_F, alpha: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F { a: color.a * alpha, ..color }
+}
+
+/// Lama animasi masuk khas tiap halaman sesudah halaman itu dibuka.
+pub fn enter_secs(page: Page) -> f32 {
+    match page {
+        Page::Water => glass::ENTER_SECS,
+        Page::Prayer => sky::ENTER_SECS,
+        Page::Focus => tomato::ENTER_SECS,
+        Page::System => gauge::ENTER_SECS,
+        Page::Timer => hourglass::ENTER_SECS,
+        Page::Tasks => checklist::ENTER_SECS,
+        Page::Shelf => rack::ENTER_SECS,
+        Page::Home => today::ENTER_SECS,
+        Page::Controls => mixer::ENTER_SECS,
+    }
+}
+
+/// Isi gelas Minum air yang sedang tampil, 0..1 dari target.
+fn water_shown(s: &Scene) -> f32 {
+    let w = s.water;
+    let level = (w.ml as f32 / w.goal.max(1) as f32).min(1.0);
+    shown_level(level, w.pour, entering(s, Page::Water))
+}
+
+/// Detik animasi masuk `page`; halaman yang sedang bergeser keluar dianggap sudah selesai.
+fn entering(s: &Scene, page: Page) -> f32 {
+    if s.page == page { s.page_age } else { f32::MAX }
 }
 
 /// Campuran dua warna: `t` = 0 warna `from`, 1 warna `to`.

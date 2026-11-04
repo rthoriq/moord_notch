@@ -73,6 +73,7 @@ fn pomodoro(studio: &mut Studio, cast: &Cast, t: f64, len: f64) {
         progress: 1.0 - left / (25.0 * 60.0),
         sessions: 2,
         minutes_left: (left / 60.0).ceil() as u32,
+        fx: None,
     };
     let hud = Hud::Focus { finished: Phase::Focus };
     let keys = [
@@ -149,7 +150,16 @@ fn timer(studio: &mut Studio, cast: &Cast, t: f64, len: f64) {
     let left = total * 60.0 - elapsed;
     let active = (PICK..ALARM).contains(&t);
     let short = if left <= 60.0 { format!("{}", left.round()) } else { format!("{}m", (left / 60.0).ceil()) };
-    let view = TimerView { running: active, active, clock: clock(left), short, progress: elapsed / (total * 60.0), total_minutes: total as u32 };
+    // Jam pasir dibalik saat durasi dipilih, dan menerima sedikit pasir saat "+1 mnt".
+    let fx = if (PICK..PICK + 0.65).contains(&t) {
+        Some((TimerFx::Flip, (t - PICK) as f32))
+    } else if (PLUS..PLUS + 0.6).contains(&t) {
+        Some((TimerFx::Add(((PLUS - PICK) * 2.0 / 300.0) as f32), (t - PLUS) as f32))
+    } else {
+        None
+    };
+    let progress = elapsed / (total * 60.0);
+    let view = TimerView { running: active, active, clock: clock(left), short, progress, total_minutes: total as u32, ending: active && left <= 10.0, fx };
     let hud = Hud::Timer { minutes: 6 };
     let keys = [
         (0.0, View::Panel, View::Panel.size(), 1.0f32),
@@ -209,7 +219,9 @@ fn water(studio: &mut Studio, cast: &Cast, t: f64, len: f64) {
     if let Some(today) = week.last_mut() {
         today.0 = ml;
     }
-    let view = WaterView { ml, goal: 2000, week, next: Some("20:15".into()) };
+    // Tiap tegukan dituang dari kran seperti di notch.
+    let pour = SIPS.iter().rev().find(|&&s| t >= s).map(|s| ((ml - 250) as f32 / 2000.0, (t - s) as f32));
+    let view = WaterView { ml, goal: 2000, week, next: Some("20:15".into()), pour };
     let hud = Hud::Water { ml: 1250, goal: 2000 };
     let keys = [
         (0.0, View::Pill, View::Pill.size(), 0.0f32),
@@ -361,11 +373,14 @@ fn calendar(studio: &mut Studio, cast: &Cast, t: f64, len: f64) {
         }
     }
     if chosen {
-        cal.events = if t >= SAVE {
-            vec![AgendaItem { id: 9, time: "09.00".into(), text: "Rapat tim".into(), done: false }]
-        } else {
-            Vec::new()
-        };
+        // Deretan hari meluncur ke hari yang dipilih; agenda hari ini bergeser keluar.
+        let slide = ((t - SELECT) as f32 / CALENDAR_SLIDE_SECS).min(1.0);
+        cal.center = calendar_ease((t - SELECT) as f32) - 1.0;
+        let before = std::mem::take(&mut cal.events);
+        cal.shift = (slide < 1.0).then(|| DayShift { t: slide, dir: 1.0, events: before.into_iter().take(2).collect(), month: None });
+        if t >= SAVE {
+            cal.events = vec![AgendaItem { id: 9, time: "09.00".into(), text: "Rapat tim".into(), done: false, soon: false }];
+        }
     }
     let draft: String = if (TYPE..SAVE).contains(&t) { NEW_EVENT.chars().take(((t - TYPE - 0.1).max(0.0) / 0.07) as usize).collect() } else { String::new() };
     let mut scene = cast.scene(View::PanelWide, Page::Home, false);

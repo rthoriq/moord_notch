@@ -4,6 +4,7 @@
 pub mod agenda;
 pub mod call;
 pub mod focus;
+pub mod prayer;
 pub mod shelf;
 pub mod tasks;
 pub mod timer;
@@ -23,11 +24,22 @@ pub enum Page {
     Tasks,
     /// Monitor sistem dan status privasi.
     System,
+    /// Jadwal sholat dari kota cuaca.
+    Prayer,
 }
 
 impl Page {
-    pub const ALL: [Page; 8] =
-        [Page::Home, Page::Controls, Page::Shelf, Page::Focus, Page::Timer, Page::Water, Page::Tasks, Page::System];
+    pub const ALL: [Page; 9] = [
+        Page::Home,
+        Page::Controls,
+        Page::Shelf,
+        Page::Focus,
+        Page::Timer,
+        Page::Water,
+        Page::Tasks,
+        Page::System,
+        Page::Prayer,
+    ];
 
     /// Nama di menu.
     pub fn label(self) -> &'static str {
@@ -40,6 +52,7 @@ impl Page {
             Page::Water => "Minum air",
             Page::Tasks => "Tugas",
             Page::System => "Sistem",
+            Page::Prayer => "Sholat",
         }
     }
 
@@ -54,6 +67,7 @@ impl Page {
             Page::Water => "minum",
             Page::Tasks => "tugas",
             Page::System => "sistem",
+            Page::Prayer => "sholat",
         }
     }
 }
@@ -61,9 +75,9 @@ impl Page {
 /// Urutan halaman dan halaman mana yang disembunyikan. Beranda selalu tampil.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Pages {
-    order: [Page; 8],
+    order: [Page; 9],
     /// Bit per halaman, menurut urutan di [`Page::ALL`].
-    hidden: u8,
+    hidden: u16,
 }
 
 impl Default for Pages {
@@ -74,7 +88,7 @@ impl Default for Pages {
 
 impl Pages {
     /// Semua halaman sesuai urutan pengguna, termasuk yang disembunyikan.
-    pub fn order(&self) -> [Page; 8] {
+    pub fn order(&self) -> [Page; 9] {
         self.order
     }
 
@@ -162,7 +176,7 @@ impl Pages {
     }
 }
 
-fn bit(page: Page) -> u8 {
+fn bit(page: Page) -> u16 {
     1 << Page::ALL.iter().position(|p| *p == page).unwrap_or(0)
 }
 
@@ -173,8 +187,8 @@ mod tests {
     #[test]
     fn pages_wrap_around() {
         let pages = Pages::default();
-        assert_eq!(pages.step(Page::Home, -1), Page::System);
-        assert_eq!(pages.step(Page::System, 1), Page::Home);
+        assert_eq!(pages.step(Page::Home, -1), Page::Prayer);
+        assert_eq!(pages.step(Page::Prayer, 1), Page::Home);
         assert_eq!(pages.step(Page::Shelf, 1), Page::Focus);
     }
 
@@ -185,26 +199,26 @@ mod tests {
         pages.set_shown(Page::Home, false);
         assert!(pages.shown(Page::Home), "beranda selalu tampil");
         assert_eq!(pages.step(Page::Timer, 1), Page::Tasks);
-        assert_eq!(pages.visible().count(), 7);
+        assert_eq!(pages.visible().count(), 8);
 
         pages.move_by(Page::System, -1);
         assert_eq!(
             pages.visible().collect::<Vec<_>>(),
-            [Page::Home, Page::Controls, Page::Shelf, Page::Focus, Page::Timer, Page::System, Page::Tasks]
+            [Page::Home, Page::Controls, Page::Shelf, Page::Focus, Page::Timer, Page::System, Page::Tasks, Page::Prayer]
         );
         assert!(!pages.can_move(Page::Home, -1));
-        assert!(!pages.can_move(Page::Tasks, 1));
+        assert!(!pages.can_move(Page::Prayer, 1));
 
         assert_eq!(Pages::parse(&pages.to_text()), pages);
-        assert_eq!(pages.to_text(), "beranda,kontrol,shelf,pomodoro,timer,-minum,sistem,tugas");
+        assert_eq!(pages.to_text(), "beranda,kontrol,shelf,pomodoro,timer,-minum,sistem,tugas,sholat");
         // Nama asing dilewati, halaman yang tidak disebut ditambahkan di akhir.
         let partial = Pages::parse("tugas, sampah, -shelf");
         assert_eq!(partial.order()[0], Page::Tasks);
         assert!(!partial.shown(Page::Shelf));
-        assert_eq!(partial.visible().count(), 7);
+        assert_eq!(partial.visible().count(), 8);
         // Pengaturan lama (sebelum ada halaman baru) tetap terbaca; halaman baru ikut tampil di akhir.
         let old = Pages::parse("beranda,shelf,pomodoro,minum,tugas,sistem");
-        assert_eq!(old.order()[6..], [Page::Controls, Page::Timer]);
+        assert_eq!(old.order()[6..], [Page::Controls, Page::Timer, Page::Prayer]);
         assert!(old.shown(Page::Timer));
     }
 }

@@ -22,9 +22,16 @@ shelf file, kalender, dan widget kecil, di tengah atas layar. Ringan, berjalan l
   liriknya tetap tampil, dan panggilan cukup ditandai titik warna.
   Win+Alt+S membisukan atau menyalakan mikrofon dari mana saja, dan aplikasi yang bukan panggilan
   bisa diabaikan di Pengaturan → Kabar.
-- **Halaman panel**: Beranda (jam atau musik, plus kalender dan agenda), Kontrol cepat (volume,
-  kecerahan, mikrofon, senyap), Shelf (seret file ke notch, atau ke zona Bagikan), Pomodoro, Timer,
-  Minum air, Tugas, dan Sistem (CPU, GPU, RAM, disk, jaringan).
+- **Halaman panel**: Beranda (jam yang angkanya bergulir atau musik, plus kalender yang meluncur
+  dan agenda), Kontrol cepat (slider volume dan kecerahan yang meluncur, sakelar mikrofon dan
+  senyap yang warnanya menyapu masuk), Shelf (seret file ke notch dan ia jatuh ke raknya, atau
+  ke zona Bagikan; "Bersihkan" menyedot semuanya ke tulisannya dan bisa diurungkan), Pomodoro,
+  Timer (jam pasir yang dibalik saat mulai), Minum air (gelas yang terisi dari kran tiap kali
+  minum dicatat), Tugas (centang yang tergambar dan konfeti saat semua selesai), Sistem (CPU,
+  GPU, RAM, disk, jaringan), dan Sholat.
+- **Jadwal sholat**: Imsak sampai Isya untuk kota cuaca, dihitung di komputer sendiri dengan
+  kriteria Kemenag RI, lengkap dengan hitung mundur, tanggal Hijriah, dan kabar "Waktunya sholat"
+  yang berbunyi. Tiap waktu bisa dikoreksi beberapa menit supaya sama dengan masjid terdekat.
 - **Tampilan**: animasi pegas, maskot yang melirik dan berekspresi, enam tema (termasuk Kaca dan
   Terang), tiga ukuran, menciut saat jendela di-maximize (bisa dimatikan di Pengaturan →
   Tampilan), sembunyi saat full-screen, dan tetap tampil di lock screen dengan isi terbatas.
@@ -77,6 +84,8 @@ Saat notch dicabut, paket dan sertifikat ini ikut dibuang.
     diputar. Judul video YouTube dirapikan dulu (misal tanpa "(Official Music Video)").
   - **Cuaca** dari [Open-Meteo](https://open-meteo.com): nama kota yang kamu ketik (sekali), lalu
     koordinat pusat kota itu tiap 30 menit. Lokasi komputer tidak pernah dibaca.
+- Jadwal sholat dihitung tanpa internet dari koordinat kota cuaca. Kalau kotanya belum dipilih,
+  nama kota yang kamu ketik dicari sekali lewat Open-Meteo, walau cuaca sendiri dimatikan.
 - Pesan masuk dibaca dari notifikasi Windows di komputermu sendiri; tidak disimpan dan tidak dikirim
   ke mana pun. "Sembunyikan isi pesan" dan mode rapat menyembunyikan isinya.
 - Kamera dan mikrofon tidak pernah dinyalakan; notch hanya melihat aplikasi mana yang sedang
@@ -138,7 +147,17 @@ Untuk pengembang:
 | `src/app.rs` | Jendela, input mouse/keyboard, timer, loop pesan, perpindahan bentuk dan halaman |
 | `src/render/mod.rs` | Gambar notch dengan Direct2D (software) ke layered window, alat gambar dasar, ikon |
 | `src/render/pages.rs` | Tata letak pil, HUD, sambutan, dan tiap halaman panel; area klik didaftarkan sambil menggambar |
-| `src/widgets/` | Data dan aturan shelf, pomodoro, timer, minum air, tugas, agenda kalender, panggilan, serta urutan halaman |
+| `src/render/glass.rs` | Gelas Minum air: isi, kran, aliran, riak, gelembung, dan animasi masuknya |
+| `src/render/sky.rs` | Suasana halaman Sholat: warna langit tiap waktu, bintang malam, dan animasi masuknya |
+| `src/render/tomato.rs` | Suasana halaman Pomodoro: cincin bertangkai, tomat tiap sesi, kenop diputar, tomat jatuh |
+| `src/render/gauge.rs` | Suasana halaman Sistem: pendaran beban, riwayat CPU, titik langsung, cincin memindai |
+| `src/render/checklist.rs` | Suasana halaman Tugas: centang tergambar, baris meluncur, cincin kemajuan, konfeti saat semua selesai |
+| `src/render/today.rs` | Suasana Beranda: pendaran waktu hari, angka jam bergulir, kalender meluncur, agenda dicentang, lagu berganti halus |
+| `src/render/rack.rs` | Suasana halaman Shelf: papan rak, file jatuh ke rak, ubin terangkat dan merapat, lencana jenis file |
+| `src/render/vacuum.rs` | Sedotan "Bersihkan" di Shelf: ubin tersedot ke tulisannya, pusaran, chip "+N", dan muntahan "Urungkan" |
+| `src/render/mixer.rs` | Suasana halaman Kontrol: slider meluncur dan angka bergulir, matahari dan speaker yang hidup, sakelar menyapu, cincin senyap |
+| `src/render/hourglass.rs` | Suasana halaman Timer: jam pasir yang dibalik, pasir "+1 mnt", merah di 10 detik terakhir, goyang saat habis |
+| `src/widgets/` | Data dan aturan shelf, pomodoro, timer, minum air, tugas, agenda kalender, panggilan, jadwal sholat, serta urutan halaman |
 | `src/install.rs` | Pasang, perbarui, dan cabut tanpa Administrator; catatan di Pengaturan > Aplikasi |
 | `src/identity.rs` | Paket identitas untuk pesan masuk: dibuat, ditandatangani, dipercaya, didaftarkan |
 | `src/log.rs` | Log error lokal |
@@ -182,7 +201,8 @@ sampai Windows mengabari ada perubahan.
 ## Lisensi dan terima kasih
 
 [MIT](LICENSE). Terinspirasi notch buatan Nusa dan aplikasi notch di Mac (Boring Notch, NotchDrop,
-NotchNook). Lirik dari [LRCLIB](https://lrclib.net), cuaca dari [Open-Meteo](https://open-meteo.com).
+NotchNook). Lirik dari [LRCLIB](https://lrclib.net), cuaca dari [Open-Meteo](https://open-meteo.com),
+rumus posisi matahari untuk jadwal sholat dari [praytimes.org](https://praytimes.org).
 
 ## English
 
@@ -191,13 +211,15 @@ with synced lyrics (also for YouTube and YouTube Music in the browser), Dynamic 
 notifications (volume, brightness, battery, Bluetooth, Wi-Fi, downloads, camera/mic in use,
 optional chat messages), an active-call pill with one-click mute (Win+Alt+S), a file shelf with a
 Share zone, a calendar with your own agenda, and small widgets (quick controls, pomodoro, timer,
-water reminder, tasks, system monitor). The interface is in Indonesian.
+water reminder, tasks, system monitor, Islamic prayer times computed offline with the Indonesian
+Ministry of Religious Affairs criteria). The interface is in Indonesian.
 
 - **Install**: download `notch.exe` from [Releases](../../releases), open it (if SmartScreen warns,
   choose *More info → Run anyway*), and choose *Ya* (Yes). No administrator rights are needed;
   uninstall from Windows Settings → Apps.
 - **Privacy**: no account and no telemetry. Data stays in `%APPDATA%\NotchWindows`. Only two
   features use the internet and both are off by default: lyrics (LRCLIB) and weather (Open-Meteo).
+  Prayer times need no internet; only looking up the city name contacts Open-Meteo, once.
 - **Settings**: click the tray icon (or open NotchWindows again from Start) for the Settings window,
   which follows Windows light/dark mode.
 - **Chat messages** (optional): Windows only lets packaged apps read notifications, so Settings →

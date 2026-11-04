@@ -44,19 +44,27 @@ impl Renderer {
         }
         let focus = Some(s.focus).filter(|f| f.running);
         let timer = Some(s.timer).filter(|t| t.running);
-        // Kiri: cincin timer atau pomodoro, sampul lagu, atau mata maskot.
+        let download = s.download.filter(|_| playing.is_none() && timer.is_none());
+        // Hitung mundur sholat hanya kalau kedua sisi pil sedang kosong.
+        let prayer = s
+            .prayer
+            .and_then(|v| v.soon.as_deref())
+            .filter(|_| playing.is_none() && timer.is_none() && focus.is_none() && download.is_none());
+        // Kiri: cincin timer atau pomodoro, sampul lagu, bulan sabit, atau mata maskot.
         if let Some(t) = timer {
             self.ring(x0 + 18.0, cy, 6.5, 2.2, t.progress, ORANGE, a);
         } else if let Some(f) = focus {
             self.ring(x0 + 18.0, cy, 6.5, 2.2, f.progress, phase_color(f.phase), a);
         } else if playing.is_some() {
             self.art(x0 + 9.0, cy - 9.0, 18.0, 5.0, a);
+        } else if prayer.is_some() {
+            self.glyph(ICON_PRAYER, &self.fonts.icon_13, x0 + 18.0, cy, TEAL, a);
         } else {
             self.eyes(x0 + 18.0, cy, 3.4, 9.0, 7.5, s.eyes, a);
         }
-        // Kanan: gelombang musik, sisa waktu timer, unduhan yang berjalan, atau sisa menit
-        // pomodoro; paling kanan titik privasi. Pil melebar saat ada unduhan, jam bergeser ke kiri.
-        let download = s.download.filter(|_| playing.is_none() && timer.is_none());
+        // Kanan: gelombang musik, sisa waktu timer, unduhan yang berjalan, sisa menit pomodoro,
+        // atau sisa menit ke waktu sholat; paling kanan titik privasi. Pil melebar saat ada
+        // unduhan, jam bergeser ke kiri.
         match (playing, timer, download, focus) {
             (Some(m), ..) => self.wave(x1 - 22.0, cy, s.seconds, accent(m.accent, p.text), a),
             (None, Some(t), ..) => {
@@ -70,7 +78,11 @@ impl Renderer {
                 let left = format!("{}m", f.minutes_left);
                 self.text(&left, &self.fonts.caption_end, rect(x1 - 52.0, 0.0, x1 - 13.0, h), phase_color(f.phase), a);
             }
-            (None, None, None, None) => {}
+            (None, None, None, None) => {
+                if let Some(soon) = prayer {
+                    self.text(soon, &self.fonts.caption_end, rect(x1 - 52.0, 0.0, x1 - 13.0, h), TEAL, a);
+                }
+            }
         }
         self.pill_dot(s, x1 - 8.0, cy, a);
         let time_right = if download.is_some() { x1 - 100.0 } else { x1 - 34.0 };
@@ -344,6 +356,13 @@ impl Renderer {
                 let detail = if app.is_empty() { "Mikrofon sudah dilepas".to_string() } else { format!("{app} sudah melepas mikrofon") };
                 self.text(&detail, &self.fonts.caption, rect(x0 + 50.0, 22.0, x1 - 20.0, 37.0), p.muted, a);
             }
+            Hud::Prayer { name, time, city } => {
+                self.circle(x0 + 28.0, cy, 13.0, TEAL, a);
+                self.glyph(ICON_PRAYER, &self.fonts.icon_13, x0 + 28.0, cy, WHITE, a);
+                self.text(&format!("Waktunya sholat {name}"), &self.fonts.label, rect(x0 + 50.0, 6.0, x1 - 76.0, 22.0), p.text, a);
+                self.text(city, &self.fonts.caption, rect(x0 + 50.0, 22.0, x1 - 20.0, 37.0), p.muted, a);
+                self.text(time, &self.fonts.label_end, rect(x1 - 76.0, 6.0, x1 - 20.0, 22.0), TEAL, a);
+            }
         }
     }
 
@@ -387,6 +406,7 @@ impl Renderer {
             Page::Water => self.water_page(s, x0, x1, a),
             Page::Tasks => self.tasks_page(s, x0, x1, a),
             Page::System => self.system_page(s, x0, x1, a),
+            Page::Prayer => self.prayer_page(s, x0, x1, a),
         }
         self.set_offset(0.0, 0.0);
     }
@@ -466,7 +486,8 @@ impl Renderer {
             self.text(day, &self.fonts.caption, rect(x, HEADER_Y - 8.0, x + date_w + 2.0, HEADER_Y + 8.0), p.soft, a);
         }
         x += date_w + 6.0;
-        self.text(s.time, &self.fonts.label, rect(x, HEADER_Y - 9.0, x + time_w + 2.0, HEADER_Y + 9.0), p.text, a);
+        let roll = s.home_fx.clock.as_ref().map(|(time, _, t)| (time.as_str(), *t));
+        self.clock_text(s.time, roll, &self.fonts.label, rect(x, HEADER_Y - 9.0, x + time_w + 2.0, HEADER_Y + 9.0), p.text, a);
         if let Some(call) = s.call {
             self.header_call(s, call, l, start - 12.0, r - 32.0, a);
         } else if let Some(weather) = s.weather {
@@ -637,9 +658,17 @@ impl Renderer {
     /// Jam di Beranda, di antara `l` dan `r`.
     fn clock_page(&self, s: &Scene, l: f32, r: f32, a: f32) {
         let p = &self.pal;
-        self.text(s.greeting, &self.fonts.greeting, rect(l, 34.0, r - 90.0, 52.0), p.muted, a);
-        self.text(s.time, &self.fonts.big_time, rect(l - 2.0, 50.0, r - 90.0, 102.0), p.text, a);
-        self.text(s.date, &self.fonts.date, rect(l, 98.0, r - 90.0, 116.0), p.soft, a);
+        // Sapaan, jam, dan tanggal naik bergantian saat halaman dibuka; angka jam yang berubah
+        // bergulir saat menit berganti.
+        let age = entering(s, Page::Home);
+        let (shown, dy) = today::rise(age, 0);
+        self.text(s.greeting, &self.fonts.greeting, rect(l, 34.0 + dy, r - 90.0, 52.0 + dy), p.muted, a * shown);
+        let (shown, dy) = today::rise(age, 1);
+        let roll = s.home_fx.clock.as_ref().map(|(time, _, t)| (time.as_str(), *t));
+        self.clock_text(s.time, roll, &self.fonts.big_time, rect(l - 2.0, 50.0 + dy, r - 90.0, 102.0 + dy), p.text, a * shown);
+        let (shown, dy) = today::rise(age, 2);
+        let date = today::date_roll(s.home_fx.clock.as_ref(), s.date);
+        self.rolling_text(s.date, date.as_ref(), &self.fonts.date, rect(l, 98.0 + dy, r - 90.0, 116.0 + dy), p.soft, a * shown);
         self.eyes(r - 40.0, 76.0, 13.0, 30.0, 25.0, s.eyes, a);
         // Kepala seperti di pemutar: cuaca di kiri, baterai di kanan. Di Beranda lebar keduanya
         // tampil di kepala kolom kalender.
@@ -659,16 +688,20 @@ impl Renderer {
     /// mikrofon dan kamera, dan tombol bisu besar di tempat mata maskot.
     fn call_page(&self, s: &Scene, call: &CallView, l: f32, r: f32, a: f32) {
         let p = &self.pal;
-        self.circle(l + 4.0, 43.0, 3.5, GREEN, a);
+        let age = entering(s, Page::Home);
+        let (shown, dy) = today::rise(age, 0);
+        self.circle(l + 4.0, 43.0 + dy, 3.5, GREEN, a * shown);
         let title = if call.app.is_empty() { "Sedang dalam panggilan".to_string() } else { format!("Panggilan di {}", call.app) };
-        self.text(&title, &self.fonts.greeting, rect(l + 14.0, 34.0, r - 90.0, 52.0), p.muted, a);
-        self.text(&call.clock, &self.fonts.big_time, rect(l - 2.0, 50.0, r - 90.0, 102.0), p.text, a);
+        self.text(&title, &self.fonts.greeting, rect(l + 14.0, 34.0 + dy, r - 90.0, 52.0 + dy), p.muted, a * shown);
+        let (shown, dy) = today::rise(age, 1);
+        self.text(&call.clock, &self.fonts.big_time, rect(l - 2.0, 50.0 + dy, r - 90.0, 102.0 + dy), p.text, a * shown);
         let muted = call.muted == Some(true);
         let (mic, mic_color) = if muted { ("Mikrofon bisu", RED) } else { ("Mikrofon menyala", p.soft) };
         let camera = if call.camera { " · Kamera menyala" } else { " · Kamera mati" };
         let mic_w = self.text_width(mic, &self.fonts.date);
-        self.text(mic, &self.fonts.date, rect(l, 98.0, l + mic_w + 2.0, 116.0), mic_color, a);
-        self.text(camera, &self.fonts.date, rect(l + mic_w, 98.0, r - 90.0, 116.0), p.soft, a);
+        let (shown, dy) = today::rise(age, 2);
+        self.text(mic, &self.fonts.date, rect(l, 98.0 + dy, l + mic_w + 2.0, 116.0 + dy), mic_color, a * shown);
+        self.text(camera, &self.fonts.date, rect(l + mic_w, 98.0 + dy, r - 90.0, 116.0 + dy), p.soft, a * shown);
 
         let (cx, cy) = (r - 40.0, 70.0);
         let over = s.hovered == Some(Hit::CallMute);
@@ -697,7 +730,8 @@ impl Renderer {
         }
     }
 
-    /// Kolom kalender: bulan, lima hari bergeser, agenda hari terpilih, dan kotak tambah agenda.
+    /// Kolom kalender: bulan, lima hari yang meluncur, agenda hari terpilih (lihat `today.rs`),
+    /// dan kotak tambah agenda.
     fn calendar(&self, s: &Scene, cal: &CalendarView, l: f32, r: f32, a: f32) {
         let p = &self.pal;
         // Kepala: cuaca dan baterai di kanan, kecuali saat musik diputar (sudah ada di kepala
@@ -712,71 +746,8 @@ impl Renderer {
             self.text(weather, &self.fonts.caption_end, rect(l, HEADER_Y - 8.0, right, HEADER_Y + 8.0), p.muted, a);
         }
 
-        self.text(&cal.month, &self.fonts.title, rect(l, 38.0, l + 46.0, 58.0), p.text, a);
-        self.text(&cal.year, &self.fonts.caption, rect(l, 58.0, l + 46.0, 72.0), p.muted, a);
-        let strip = l + 46.0;
-        let col = (r - strip) / cal.days.len().max(1) as f32;
-        self.hit(rect(strip, 34.0, r, 84.0), Hit::CalendarStrip);
-        for (i, day) in cal.days.iter().enumerate() {
-            let cx = strip + col * (i as f32 + 0.5);
-            let hit = Hit::CalendarDay(day.offset);
-            let name = if day.today { p.accent } else { p.muted };
-            self.text(day.name, &self.fonts.caption_center, rect(cx - col / 2.0, 36.0, cx + col / 2.0, 50.0), name, a);
-            let (fill, color) = if day.today {
-                (Some(p.accent), WHITE)
-            } else if day.selected {
-                (Some(self.tint(0.18)), p.text)
-            } else if s.hovered == Some(hit) {
-                (Some(self.tint(0.08)), p.text)
-            } else {
-                (None, p.soft)
-            };
-            if let Some(fill) = fill {
-                self.circle(cx, 63.0, 12.0, fill, a);
-            }
-            if day.today && day.selected {
-                self.circle_outline(cx, 63.0, 14.5, 1.2, with_alpha(p.accent, 0.5), a);
-            }
-            self.text(&day.number.to_string(), &self.fonts.label_center, rect(cx - 14.0, 53.0, cx + 14.0, 73.0), color, a);
-            if day.has_events {
-                self.circle(cx, 80.0, 2.0, if day.today { p.accent } else { p.muted }, a);
-            }
-            self.hit(rect(cx - col / 2.0, 34.0, cx + col / 2.0, 84.0), hit);
-        }
-
-        // Agenda hari terpilih.
-        self.hit(rect(l - 4.0, 85.0, r + 4.0, 116.0), Hit::AgendaList);
-        if cal.events.is_empty() {
-            self.text("Tidak ada agenda", &self.fonts.caption, rect(l, 92.0, r, 108.0), p.muted, a);
-        }
-        for (row, item) in cal.events.iter().skip(cal.scroll).take(crate::widgets::agenda::VISIBLE).enumerate() {
-            let y = 92.0 + row as f32 * 16.0;
-            let hovered = matches!(s.hovered, Some(Hit::AgendaRow(id) | Hit::AgendaToggle(id) | Hit::AgendaRemove(id)) if id == item.id);
-            // Seluruh baris menyalakan sorotan; lingkaran dan × dicatat sesudahnya supaya menang.
-            self.hit(rect(l - 4.0, y - 8.0, r + 4.0, y + 8.0), Hit::AgendaRow(item.id));
-            let bx = l + 6.0;
-            if item.done {
-                self.circle(bx, y, 6.0, p.accent, a);
-                self.glyph(ICON_CHECK, &self.fonts.icon_9, bx, y, WHITE, a);
-            } else {
-                self.circle_outline(bx, y, 5.5, 1.4, if hovered { p.text } else { p.accent }, a);
-            }
-            self.hit(rect(bx - 9.0, y - 8.0, bx + 9.0, y + 8.0), Hit::AgendaToggle(item.id));
-            let area = rect(l + 18.0, y - 8.0, r - 44.0, y + 8.0);
-            if item.done {
-                self.text_struck(&item.text, &self.fonts.caption, area, p.muted, a);
-            } else {
-                self.text(&item.text, &self.fonts.caption, area, p.text, a);
-            }
-            if hovered {
-                let over = s.hovered == Some(Hit::AgendaRemove(item.id));
-                self.glyph(ICON_CLOSE, &self.fonts.icon_9, r - 8.0, y, if over { RED } else { p.muted }, a);
-                self.hit(rect(r - 20.0, y - 8.0, r + 4.0, y + 8.0), Hit::AgendaRemove(item.id));
-            } else {
-                self.text(&item.time, &self.fonts.caption_end, rect(r - 44.0, y - 8.0, r, y + 8.0), p.muted, a);
-            }
-        }
-
+        self.calendar_strip(s, cal, l, r, a);
+        self.agenda_list(s, cal, l, r, a);
         // Kotak tambah agenda; jumlah agenda yang tidak muat ditulis di ujung kanannya.
         let input = rect(l, ROW_Y - 10.0, r, ROW_Y + 10.0);
         let over = s.hovered == Some(Hit::AgendaInput);
@@ -800,20 +771,50 @@ impl Renderer {
         let p = &self.pal;
         let (l, r) = (x0 + MARGIN, x1 - MARGIN);
         let c = s.controls;
+        let age = entering(s, Page::Controls);
         let right = c.quiet_minutes.map(|m| format!("Senyap {m} mnt lagi")).unwrap_or_default();
         // Tanpa hitung mundur senyap, kepala halaman berisi tombol ke jendela pengaturan.
         let (right, hit) = if right.is_empty() { ("Pengaturan".to_string(), Some(Hit::OpenSettings)) } else { (right, None) };
         self.header(s, Some(ICON_CONTROLS), "Kontrol cepat", &right, hit, x0, x1, a);
+        // Sisa waktu senyap juga tampil sebagai cincin kecil yang menyusut tiap menit.
+        if let Some(minutes) = c.quiet_minutes {
+            let x = r - self.text_width(&right, &self.fonts.caption_end) - 10.0;
+            self.ring(x, HEADER_Y, 4.5, 2.0, mixer::quiet_left(minutes), p.accent, a);
+        }
 
-        let (icon, value, label, color) = match c.volume {
-            Some((level, true)) => (ICON_MUTE, Some(level), "Bisu".to_string(), p.muted),
-            Some((level, false)) => (volume_icon(level), Some(level), format!("{}", (level * 100.0).round()), p.text),
-            None => (ICON_VOLUME[2], None, String::new(), p.text),
-        };
-        self.slider(s, 56.0, l, r, (icon, Some(Hit::VolumeMute)), Hit::VolumeSlider, value, &label, color, a);
-        let brightness = c.brightness.map(|b| b as f32 / 100.0);
-        let label = c.brightness.map(|b| b.to_string()).unwrap_or_default();
-        self.slider(s, 90.0, l, r, (ICON_BRIGHTNESS, None), Hit::BrightnessSlider, brightness, &label, p.text, a);
+        // Nilai baru diluncurkan, bukan dilompati, dan angkanya bergulir. Bilah volume memudar ke
+        // abu-abu saat dibisukan sambil speakernya membal; matahari kecerahan membesar dan
+        // berputar mengikuti nilainya.
+        let label_alpha = mixer::label_in(age);
+        let muted = c.volume.is_some_and(|(_, muted)| muted);
+        let level = c.volume.map(|(level, _)| mixer::shown(level, c.fx.volume, 0, age));
+        let (label, roll) = c.volume.map_or((String::new(), None), |(level, _)| mixer::label(level, muted, c.fx.volume, c.fx.mute));
+        self.slider(s, l, r, a, SliderRow {
+            y: 56.0,
+            icon: if muted { ICON_MUTE } else { volume_icon(level.unwrap_or(0.67)) },
+            icon_hit: Some(Hit::VolumeMute),
+            icon_look: (mixer::speaker_pop(c.fx.mute), 0.0),
+            hit: Hit::VolumeSlider,
+            fill: level,
+            color: blend(p.text, p.muted, mixer::muted_tone(muted, c.fx.mute)),
+            label: &label,
+            roll: roll.as_ref(),
+            label_alpha,
+        });
+        let light = c.brightness.map(|b| mixer::shown(b as f32 / 100.0, c.fx.brightness, 1, age));
+        let (label, roll) = c.brightness.map_or((String::new(), None), |b| mixer::label(b as f32 / 100.0, false, c.fx.brightness, None));
+        self.slider(s, l, r, a, SliderRow {
+            y: 90.0,
+            icon: ICON_BRIGHTNESS,
+            icon_hit: None,
+            icon_look: light.map_or((1.0, 0.0), mixer::sun),
+            hit: Hit::BrightnessSlider,
+            fill: light,
+            color: p.text,
+            label: &label,
+            roll: roll.as_ref(),
+            label_alpha,
+        });
 
         if let Some(draft) = s.city_draft {
             let area = rect(l, ROW_Y - 11.0, r, ROW_Y + 11.0);
@@ -821,82 +822,96 @@ impl Renderer {
             self.hit(area, Hit::CityInput);
             return;
         }
+        // Tombol naik bergantian dari kiri saat halaman dibuka.
         let width = 120.0;
-        let mut x = l;
-        let mut button = |text: &str, hit: Option<Hit>, on: Option<D2D1_COLOR_F>| {
-            let area = rect(x, ROW_Y - 11.0, x + width, ROW_Y + 11.0);
-            let over = hit.is_some() && s.hovered == hit;
-            let (fill, color) = match (on, hit) {
-                (Some(fill), _) => (Some(fill), WHITE),
-                (None, None) => (None, p.dim),
-                (None, Some(_)) => (Some(self.tint(if over { 0.16 } else { 0.08 })), if over { p.text } else { p.soft }),
-            };
-            self.chip(area, text, fill, color, a);
-            if let Some(hit) = hit {
-                self.hit(area, hit);
-            }
-            x += width + 8.0;
+        let slot = |index: usize| {
+            let x = l + index as f32 * (width + 8.0);
+            let (shown, dy) = mixer::rise(age, index);
+            (rect(x, ROW_Y - 11.0, x + width, ROW_Y + 11.0), a * shown, dy)
         };
+        let lifted = |area: D2D_RECT_F, dy: f32| rect(area.left, area.top + dy, area.right, area.bottom + dy);
+        let (area, alpha, dy) = slot(0);
         match c.mic {
-            Some(true) => button("Mikrofon bisu", Some(Hit::MicToggle), Some(ORANGE)),
-            Some(false) => button("Mikrofon nyala", Some(Hit::MicToggle), None),
-            None => button("Tanpa mikrofon", None, None),
+            Some(muted) => {
+                let hovered = s.hovered == Some(Hit::MicToggle);
+                let icon = (ICON_MIC_OFF, ICON_MICROPHONE);
+                let text = ("Mikrofon bisu", "Mikrofon nyala");
+                self.switch(&mixer::Switch { area, on: muted, age: c.fx.mic, icon, text, color: ORANGE, hovered }, dy, alpha);
+                self.hit(area, Hit::MicToggle);
+            }
+            None => self.chip(lifted(area, dy), "Tanpa mikrofon", None, p.dim, alpha),
         }
-        match c.quiet_minutes {
-            Some(_) => button("Senyap aktif", Some(Hit::QuietToggle), Some(p.accent)),
-            None => button("Senyap 1 jam", Some(Hit::QuietToggle), None),
-        }
+        let (area, alpha, dy) = slot(1);
+        let hovered = s.hovered == Some(Hit::QuietToggle);
+        let icon = (mixer::ICON_QUIET, mixer::ICON_QUIET);
+        let text = ("Senyap aktif", "Senyap 1 jam");
+        let on = c.quiet_minutes.is_some();
+        self.switch(&mixer::Switch { area, on, age: c.fx.quiet, icon, text, color: p.accent, hovered }, dy, alpha);
+        self.hit(area, Hit::QuietToggle);
         if let Some(city) = &c.city {
-            button(city, Some(Hit::CityInput), None);
+            let (area, alpha, dy) = slot(2);
+            let over = s.hovered == Some(Hit::CityInput);
+            let fill = self.tint(if over { 0.16 } else { 0.08 });
+            self.chip(lifted(area, dy), city, Some(fill), if over { p.text } else { p.soft }, alpha);
+            self.hit(area, Hit::CityInput);
         }
     }
 
-    /// Baris slider: ikon (bisa diklik kalau `icon.1` ada), jalur dengan kenop, dan nilainya.
-    /// Tanpa `value`, barisnya hanya bertuliskan "tidak tersedia".
-    #[allow(clippy::too_many_arguments)]
-    fn slider(&self, s: &Scene, y: f32, l: f32, r: f32, icon: (char, Option<Hit>), hit: Hit, value: Option<f32>, label: &str, color: D2D1_COLOR_F, a: f32) {
+    /// Baris slider: ikon (bisa diklik kalau ada `icon_hit`), jalur tanpa kenop, dan angkanya.
+    /// Tanpa `fill`, barisnya hanya bertuliskan "tidak tersedia".
+    fn slider(&self, s: &Scene, l: f32, r: f32, a: f32, row: SliderRow) {
         let p = &self.pal;
-        let (glyph, icon_hit) = icon;
-        let over_icon = icon_hit.is_some() && s.hovered == icon_hit;
+        let y = row.y;
+        let over_icon = row.icon_hit.is_some() && s.hovered == row.icon_hit;
         if over_icon {
             self.circle(l + 8.0, y, 13.0, self.tint(0.12), a);
         }
-        self.glyph(glyph, &self.fonts.icon_16, l + 8.0, y, if over_icon { p.text } else { p.soft }, a);
-        if let Some(icon_hit) = icon_hit {
+        let (scale, turn) = row.icon_look;
+        let color = if over_icon { p.text } else { p.soft };
+        self.placed(l + 8.0, y, scale, 0.0, || {
+            self.rotated(l + 8.0, y, turn, || self.glyph(row.icon, &self.fonts.icon_16, l + 8.0, y, color, a));
+        });
+        if let Some(icon_hit) = row.icon_hit {
             self.hit(rect(l - 6.0, y - 14.0, l + 22.0, y + 14.0), icon_hit);
         }
         let (start, end) = (l + 34.0, r - 48.0);
-        let Some(value) = value else {
+        let Some(fill) = row.fill else {
             self.text("tidak tersedia", &self.fonts.caption, rect(start, y - 8.0, r, y + 8.0), p.muted, a);
             return;
         };
         // Seperti bar lagu: tanpa kenop, menebal saat disorot atau diseret.
-        let thick = if s.hovered == Some(hit) { 10.0 } else { 6.0 };
-        self.bar_sized(start, end, y, thick, value, color, a);
-        self.text(label, &self.fonts.label_end, rect(r - 46.0, y - 10.0, r, y + 10.0), p.text, a);
+        let thick = if s.hovered == Some(row.hit) { 10.0 } else { 6.0 };
+        self.bar_sized(start, end, y, thick, fill, row.color, a);
+        let area = rect(r - 46.0, y - 10.0, r, y + 10.0);
+        self.rolling_text(row.label, row.roll, &self.fonts.label_end, area, p.text, a * row.label_alpha);
         // Area klik selebar jalurnya persis, supaya posisi klik = nilai.
-        self.hit(rect(start, y - 13.0, end, y + 13.0), hit);
+        self.hit(rect(start, y - 13.0, end, y + 13.0), row.hit);
     }
 
-    /// Timer cepat: cincin sisa waktu, pilihan durasi, jeda, dan batal.
+    /// Timer cepat: cincin sisa waktu, jam pasir, pilihan durasi, jeda, dan batal.
     fn timer_page(&self, s: &Scene, x0: f32, x1: f32, a: f32) {
         let p = &self.pal;
         let (l, r) = (x0 + MARGIN, x1 - MARGIN);
         let t = s.timer;
+        let age = entering(s, Page::Timer);
         let right = if t.active { format!("Timer {} menit", t.total_minutes) } else { String::new() };
         self.header(s, Some(ICON_TIMER), "Timer", &right, None, x0, x1, a);
 
         let (cx, cy) = (l + 34.0, 76.0);
+        // Jam pasir di kiri tombol batal; tulisan berhenti sebelum menabraknya.
+        let gx = r - 66.0;
+        let text_r = gx - 24.0;
         if t.active {
             if s.hovered == Some(Hit::TimerToggle) {
                 self.circle(cx, cy, 24.0, self.tint(0.14), a);
             }
-            self.ring(cx, cy, 30.0, 5.0, t.progress, ORANGE, a);
+            self.ring(cx, cy, 30.0, 5.0, hourglass::ring(t, age), hourglass::accent(t), a);
             self.glyph(if t.running { ICON_PAUSE } else { ICON_PLAY }, &self.fonts.icon_20, cx, cy, p.text, a);
             self.hit(rect(cx - 34.0, cy - 34.0, cx + 34.0, cy + 34.0), Hit::TimerToggle);
-            self.text(&t.clock, &self.fonts.big_num, rect(l + 82.0, 52.0, r - 44.0, 92.0), p.text, a);
+            let clock = if t.ending { RED } else { p.text };
+            self.text(&t.clock, &self.fonts.big_num, rect(l + 82.0, 52.0, text_r, 92.0), clock, a);
             let state = if t.running { "Berjalan" } else { "Dijeda" };
-            self.text(state, &self.fonts.caption, rect(l + 84.0, 90.0, r - 44.0, 106.0), p.muted, a);
+            self.text(state, &self.fonts.caption, rect(l + 84.0, 90.0, text_r, 106.0), p.muted, a);
             let (bx, by) = (r - 14.0, 72.0);
             let over = s.hovered == Some(Hit::TimerCancel);
             self.circle(bx, by, 15.0, self.tint(if over { 0.14 } else { 0.08 }), a);
@@ -904,11 +919,22 @@ impl Renderer {
             self.hit(rect(bx - 16.0, by - 16.0, bx + 16.0, by + 16.0), Hit::TimerCancel);
         } else {
             self.ring(cx, cy, 30.0, 5.0, 0.0, ORANGE, a);
+            self.time_up(cx, cy, 30.0, 5.0, t, a);
             self.glyph(ICON_TIMER, &self.fonts.icon_20, cx, cy, p.soft, a);
-            self.text("Pilih durasi", &self.fonts.title, rect(l + 82.0, 58.0, r, 78.0), p.text, a);
-            let hint = "Ada kabar dan bunyi alarm saat waktunya habis";
-            self.text(hint, &self.fonts.caption, rect(l + 82.0, 80.0, r, 96.0), p.muted, a);
+            let (title, caption) = (rect(l + 82.0, 58.0, text_r, 78.0), rect(l + 82.0, 80.0, text_r, 96.0));
+            // Sesaat setelah waktu habis, halamannya sendiri yang mengabarkan.
+            let (done, usual) = hourglass::labels(t);
+            if done > 0.0 {
+                self.text("Waktu habis", &self.fonts.title, title, p.text, a * done);
+                let total = format!("Timer {} menit selesai", t.total_minutes);
+                self.text(&total, &self.fonts.caption, caption, p.muted, a * done);
+            }
+            if usual > 0.0 {
+                self.text("Pilih durasi", &self.fonts.title, title, p.text, a * usual);
+                self.text("Kabar dan alarm saat waktu habis", &self.fonts.caption, caption, p.muted, a * usual);
+            }
         }
+        self.hourglass(gx, t, age, a);
 
         let mut x = l;
         let presets = crate::widgets::timer::PRESETS.map(|m| (format!("{m} mnt"), Hit::TimerPreset(m)));
@@ -946,13 +972,31 @@ impl Renderer {
     /// progres di tengah; tombol lirik dan tombol putar di bawah.
     fn media_page(&self, s: &Scene, m: &MediaView, l: f32, r: f32, a: f32) {
         let p = &self.pal;
-        // Tanpa artis (misal video), judul diletakkan di tengah sampul.
-        self.art(l, ART_TOP, ART_SIZE, 11.0, a);
+        let age = entering(s, Page::Home);
+        let track = s.home_fx.track.as_ref().map(|(old, t)| (old, *t)).filter(|(_, t)| *t < TRACK_SECS);
+        self.cover(l, ART_TOP, ART_SIZE, 11.0, s.home_fx.art, age, a);
+        // Judul dan artis naik saat halaman dibuka. Saat lagu berganti, yang lama keluar dan yang
+        // baru masuk dari arah lompatannya. Tanpa artis (misal video), judul diletakkan di tengah
+        // sampul.
         let text_l = l + ART_SIZE + 12.0;
-        let (title_y, artist_y) = if m.artist.is_empty() { (ART_TOP + ART_SIZE / 2.0, 0.0) } else { (51.0, 70.0) };
-        self.text(&m.title, &self.fonts.title, rect(text_l, title_y - 10.0, r, title_y + 10.0), p.text, a);
-        if !m.artist.is_empty() {
-            self.text(&m.artist, &self.fonts.body, rect(text_l, artist_y - 9.0, r, artist_y + 9.0), p.muted, a);
+        let titles = |title: &str, artist: &str, dx: f32, a: f32| {
+            let (title_y, artist_y) = if artist.is_empty() { (ART_TOP + ART_SIZE / 2.0, 0.0) } else { (51.0, 70.0) };
+            let (shown, dy) = today::rise(age, 1);
+            self.text(title, &self.fonts.title, rect(text_l + dx, title_y - 10.0 + dy, r + dx, title_y + 10.0 + dy), p.text, a * shown);
+            if !artist.is_empty() {
+                let (shown, dy) = today::rise(age, 2);
+                self.text(artist, &self.fonts.body, rect(text_l + dx, artist_y - 9.0 + dy, r + dx, artist_y + 9.0 + dy), p.muted, a * shown);
+            }
+        };
+        match track {
+            Some((old, t)) => {
+                let ((out_dx, out_a), (in_dx, in_a)) = today::track_swap(old.dir, t);
+                self.push_clip(rect(text_l - 2.0, ART_TOP, r + 4.0, ART_TOP + ART_SIZE));
+                titles(&old.title, &old.artist, out_dx, a * out_a);
+                titles(&m.title, &m.artist, in_dx, a * in_a);
+                self.pop_clip();
+            }
+            None => titles(&m.title, &m.artist, 0.0, a),
         }
 
         // Waktu berjalan, bar, dan sisa waktu. Bar menebal saat disorot kalau bisa diseret.
@@ -962,7 +1006,9 @@ impl Renderer {
             self.text(&m.remaining, &self.fonts.caption_end, rect(r - 44.0, y - 8.0, r, y + 8.0), p.soft, a);
             let (start, end) = (l + 42.0, r - 48.0);
             let active = m.can_seek && (m.seeking || s.hovered == Some(Hit::MediaSeek));
-            self.bar_sized(start, end, y, if active { 7.0 } else { 4.0 }, progress, p.text, a);
+            // Menyapu dari kosong saat halaman dibuka, meluncur dari posisi lama saat lagu berganti.
+            let shown = today::bar(progress, track, age);
+            self.bar_sized(start, end, y, if active { 7.0 } else { 4.0 }, shown, p.text, a);
             if m.can_seek {
                 // Area klik selebar bar persis, supaya posisi klik = posisi lagu.
                 self.hit(rect(start, y - 9.0, end, y + 9.0), Hit::MediaSeek);
@@ -1009,6 +1055,10 @@ impl Renderer {
         let (l, r) = (x0 + MARGIN, x1 - MARGIN);
         let shelf = s.shelf;
         let count = shelf.items.len();
+        let fx = s.shelf_fx;
+        // Selama "Bersihkan" menyedot atau "Urungkan" memuntahkan, judul dan tulisan kanan
+        // digambar sedotannya sendiri, dan ubinnya tidak bisa diklik.
+        let flow = fx.flow.map(|(age, back)| vacuum::Flow::new(age, back, count, shelf.scroll, self.mouth_at(r, HEADER_Y)));
         let title = if count > SHELF_VISIBLE {
             let last = (shelf.scroll + SHELF_VISIBLE).min(count);
             format!("Shelf · {}–{last} dari {count}", shelf.scroll + 1)
@@ -1017,50 +1067,87 @@ impl Renderer {
         } else {
             "Shelf".to_string()
         };
-        let (right, right_hit) = if count > 0 { ("Bersihkan", Some(Hit::ShelfClear)) } else { ("", None) };
-        self.header(s, Some(ICON_FOLDER), &title, right, right_hit, x0, x1, a);
+        match &flow {
+            Some(flow) => {
+                self.header(s, Some(ICON_FOLDER), "", "", None, x0, x1, a);
+                self.flow_title(flow, l, r, a);
+            }
+            None if count > 0 => self.header(s, Some(ICON_FOLDER), &title, "Bersihkan", Some(Hit::ShelfClear), x0, x1, a),
+            None => {
+                self.header(s, Some(ICON_FOLDER), &title, "", None, x0, x1, a);
+                if fx.undo {
+                    self.undo_link(s, r, HEADER_Y, a);
+                }
+            }
+        }
 
         let strip = rect(l, 38.0, r, 118.0);
         self.hit(strip, Hit::ShelfStrip);
-        let fx = s.shelf_fx;
+        let age = entering(s, Page::Shelf);
         if count == 0 && !shelf.drop_hover {
-            self.outline(strip, 12.0, 1.2, true, p.dim, a);
-            self.glyph(ICON_DOWNLOAD, &self.fonts.icon_20, (l + r) / 2.0, 66.0, p.muted, a);
+            // Sesudah dibersihkan, tampilan kosong muncul pelan dan ikonnya mengangguk sekali.
+            let (shown, nod) = fx.emptied.map_or((1.0, age), |e| (smooth(e / 0.25), e));
+            let caption = fx.emptied.map_or(1.0, |e| smooth((e - 0.1) / 0.25));
+            self.outline(strip, 12.0, 1.2, true, p.dim, a * shown);
+            self.glyph(ICON_DOWNLOAD, &self.fonts.icon_20, (l + r) / 2.0, 66.0 + rack::nod(nod), p.muted, a * shown);
             let text = "Seret file ke notch untuk disimpan sementara";
-            self.text(text, &self.fonts.caption_center, rect(l, 86.0, r, 102.0), p.muted, a);
+            self.text(text, &self.fonts.caption_center, rect(l, 86.0, r, 102.0), p.muted, a * caption);
             self.drop_glow(strip, fx, a);
             return;
         }
 
-        for (slot, item) in shelf.items.iter().skip(shelf.scroll).take(SHELF_VISIBLE).enumerate() {
-            let tx = l + slot as f32 * 76.0;
-            let tile = rect(tx, 38.0, tx + 68.0, 118.0);
-            let hovered = matches!(s.hovered, Some(Hit::ShelfItem(id) | Hit::ShelfRemove(id)) if id == item.id);
-            // Ubin baru muncul membesar, ubin yang dihapus mengecil lalu hilang, ubin yang
-            // disorot membesar 5%.
-            let (grow, fade) = fx.tiles.get(&item.id).copied().unwrap_or((1.0, 1.0));
-            let ta = a * fade;
-            self.scaled(tx + 34.0, 78.0, grow * if hovered { 1.05 } else { 1.0 }, || {
-                if hovered {
-                    self.rounded(tile, 10.0, self.tint(0.08), ta);
-                }
-                self.thumb(item.id, item.is_dir, tx + 34.0, 44.0, 48.0, ta);
-                self.text(&item.name, &self.fonts.caption_center, rect(tx + 3.0, 96.0, tx + 65.0, 112.0), p.soft, ta);
-            });
-            self.hit(tile, Hit::ShelfItem(item.id));
+        // Ubin berdiri di papan rak, yang memudar setelah semua ubin tersedot. Yang sedang
+        // merapat atau digulir bisa lewat di luar deretan yang terlihat, jadi dipotong selama itu.
+        self.rack(l, r, a * flow.as_ref().map_or(1.0, |f| f.board()));
+        let sliding = !fx.slots.is_empty();
+        if sliding {
+            self.push_clip(rect(l - 6.0, 0.0, r + 6.0, 124.0));
+        }
+        for (index, item) in shelf.items.iter().enumerate() {
+            let target = index as f32 - shelf.scroll as f32;
+            let slot = fx.slots.get(&item.id).copied().unwrap_or(target);
+            if slot <= -1.0 || slot >= SHELF_VISIBLE as f32 {
+                continue;
+            }
+            let tx = l + slot * rack::TILE_STEP;
+            if let Some(flow) = &flow {
+                self.flowing_tile(flow, item, tx, target, fx.lean, a);
+                continue;
+            }
+            let visible = (0.0..SHELF_VISIBLE as f32).contains(&target);
+            let hovered = visible && matches!(s.hovered, Some(Hit::ShelfItem(id) | Hit::ShelfRemove(id)) if id == item.id);
+            // Ubin baru jatuh ke rak, ubin yang dihapus terangkat, ubin yang disorot membesar 5%,
+            // dan semuanya condong sedikit ke "Bersihkan" selama kursor di atasnya.
+            let look = rack::Look { lean: vacuum::lean(fx.lean), ..rack::look(fx.tiles.get(&item.id).copied(), target, age) };
+            self.shelf_tile(item, tx, look, hovered, a);
+            if !visible {
+                continue;
+            }
+            // Area klik selalu di tempat akhirnya, walau ubinnya masih merapat.
+            let hx = l + target * rack::TILE_STEP;
+            self.hit(rect(hx, 38.0, hx + 68.0, 118.0), Hit::ShelfItem(item.id));
             if hovered {
                 let (bx, by) = (tx + 60.0, 45.0);
                 let over = s.hovered == Some(Hit::ShelfRemove(item.id));
                 self.circle(bx, by, 8.5, if over { RED } else { p.badge }, a);
                 self.glyph(ICON_CLOSE, &self.fonts.icon_9, bx, by, if over { WHITE } else { p.text }, a);
-                self.hit(rect(bx - 9.5, by - 9.5, bx + 9.5, by + 9.5), Hit::ShelfRemove(item.id));
+                self.hit(rect(hx + 50.5, by - 9.5, hx + 69.5, by + 9.5), Hit::ShelfRemove(item.id));
             }
+        }
+        if sliding {
+            self.pop_clip();
+        }
+        // Tulisan "Bersihkan" digambar sesudah ubin supaya ubin yang tersedot masuk ke dalamnya.
+        if let Some(flow) = &flow {
+            self.leftover(flow, l, fx.lean, a);
+            self.mouth(flow, r, a);
         }
         if shelf.drop_hover {
             self.drop_zone(s, strip, count > 0, a);
         } else {
             let hint = "Klik 2x buka · klik kanan lihat di folder · seret keluar";
-            self.text(hint, &self.fonts.caption_center, rect(l, ROW_Y - 8.0, r, ROW_Y + 8.0), p.muted, a);
+            let shown = flow.as_ref().map_or(1.0, |f| f.hint());
+            self.text(hint, &self.fonts.caption_center, rect(l, ROW_Y - 8.0, r, ROW_Y + 8.0), p.muted, a * shown);
         }
         self.drop_glow(strip, fx, a);
     }
@@ -1109,15 +1196,21 @@ impl Renderer {
         let p = &self.pal;
         let (l, r) = (x0 + MARGIN, x1 - MARGIN);
         let f = s.focus;
-        let right = if f.sessions > 0 { format!("{} sesi hari ini", f.sessions) } else { String::new() };
-        self.header(s, Some(ICON_STOPWATCH), "Pomodoro", &right, None, x0, x1, a);
+        // Seperti timer dapur berbentuk tomat: cincin bertangkai dan berdaun, satu tomat kecil
+        // untuk tiap sesi fokus hari ini.
+        let age = entering(s, Page::Focus);
+        self.header(s, Some(ICON_STOPWATCH), "Pomodoro", "", None, x0, x1, a);
+        self.tomatoes(r, HEADER_Y, f.sessions, f.fx, age, a);
 
         // Cincin progres sekaligus tombol mulai/jeda.
         let (cx, cy) = (l + 34.0, 76.0);
         if s.hovered == Some(Hit::FocusToggle) {
             self.circle(cx, cy, 24.0, self.tint(0.14), a);
         }
-        self.ring(cx, cy, 30.0, 5.0, if f.active { f.progress } else { 0.0 }, phase_color(f.phase), a);
+        let progress = tomato::ring(if f.active { f.progress } else { 0.0 }, f.fx, age);
+        self.ring(cx, cy, 30.0, 5.0, progress, phase_color(f.phase), a);
+        self.sparkle(cx, cy, 30.0, f.fx, a);
+        self.calyx(cx, cy, 30.0, f.fx, age, a);
         self.glyph(if f.running { ICON_PAUSE } else { ICON_PLAY }, &self.fonts.icon_20, cx, cy, p.text, a);
         self.hit(rect(cx - 34.0, cy - 34.0, cx + 34.0, cy + 34.0), Hit::FocusToggle);
 
@@ -1187,9 +1280,11 @@ impl Renderer {
             self.text(&initial.to_string(), &self.fonts.tiny, rect(x - 4.0, 97.0, x + 12.0, 109.0), if today { p.soft } else { p.muted }, a);
         }
 
+        // Gelas yang terisi menggantikan cincin; animasi masuknya hanya untuk halaman yang
+        // sedang dibuka, bukan yang sedang bergeser keluar.
         let done = (w.ml as f32 / goal).min(1.0);
-        self.ring(r - 30.0, 72.0, 26.0, 5.0, done, BLUE, a);
-        self.text(&format!("{}%", (done * 100.0).round()), &self.fonts.label_center, rect(r - 56.0, 62.0, r - 4.0, 82.0), p.text, a);
+        self.glass(r - 30.0, x1, done, w.pour, entering(s, Page::Water), a);
+        self.text(&format!("{}%", (done * 100.0).round()), &self.fonts.label_center, rect(r - 60.0, 103.0, r, 117.0), p.text, a);
 
         let drink = rect(l, ROW_Y - 11.0, l + 136.0, ROW_Y + 11.0);
         let over = s.hovered == Some(Hit::WaterDrink);
@@ -1203,10 +1298,69 @@ impl Renderer {
         }
     }
 
+    /// Jadwal sholat: waktu berikutnya dengan cincin kemajuan sejak waktu sebelumnya, lalu
+    /// ketujuh waktu sehari dengan waktu berikutnya disorot.
+    fn prayer_page(&self, s: &Scene, x0: f32, x1: f32, a: f32) {
+        let p = &self.pal;
+        let (l, r) = (x0 + MARGIN, x1 - MARGIN);
+        let (cx, cy) = (l + 28.0, 66.0);
+        let Some(v) = s.prayer else {
+            self.header(s, Some(ICON_PRAYER), "Sholat", "", None, x0, x1, a);
+            self.ring(cx, cy, 26.0, 5.0, 0.0, TEAL, a);
+            self.glyph(ICON_PRAYER, &self.fonts.icon_20, cx, cy, p.soft, a);
+            self.text("Pilih kota dulu", &self.fonts.title, rect(l + 70.0, 48.0, r, 68.0), p.text, a);
+            let hint = "Jadwal dihitung di laptop ini dari kota cuaca";
+            self.text(hint, &self.fonts.caption, rect(l + 70.0, 70.0, r, 86.0), p.muted, a);
+            let area = rect(l, ROW_Y - 11.0, l + 96.0, ROW_Y + 11.0);
+            let over = s.hovered == Some(Hit::PrayerCity);
+            self.chip(area, "Pilih kota", Some(self.tint(if over { 0.16 } else { 0.08 })), if over { p.text } else { p.soft }, a);
+            self.hit(area, Hit::PrayerCity);
+            return;
+        };
+        // Warna, ikon, dan bintang mengikuti langit saat ini; cincin menyapu dan sorotan jadwal
+        // bergeser saat halaman dibuka.
+        let age = entering(s, Page::Prayer);
+        let color = sky::sky_color(v.sky);
+        if v.sky == Sky::Night {
+            self.stars(l, age, a);
+        }
+        self.header(s, Some(ICON_PRAYER), "Sholat", &v.hijri, None, x0, x1, a);
+        self.ring(cx, cy, 26.0, 5.0, sky::ring(v.progress, age), color, a);
+        let icon = if v.sky.daylight() { ICON_BRIGHTNESS } else { ICON_PRAYER };
+        self.glyph(icon, &self.fonts.icon_20, cx, cy, color, a);
+        self.text(&v.next_time, &self.fonts.big_num, rect(l + 68.0, 38.0, r - 110.0, 78.0), p.text, a);
+        let name = if v.tomorrow { format!("{} besok", v.next_name) } else { v.next_name.to_string() };
+        self.text(&format!("{name} · {} lagi", v.left), &self.fonts.caption, rect(l + 70.0, 76.0, r - 96.0, 92.0), p.muted, a);
+        self.text(&v.city, &self.fonts.caption_end, rect(r - 120.0, 50.0, r, 66.0), p.soft, a);
+        if let Some(current) = v.current {
+            self.text(&format!("Waktu {current}"), &self.fonts.caption_end, rect(r - 120.0, 66.0, r, 82.0), p.muted, a);
+        }
+
+        let w = (r - l) / v.times.len().max(1) as f32;
+        let spot = l + w * sky::highlight(v.next, age);
+        self.rounded(rect(spot + 2.0, 102.0, spot + w - 2.0, 138.0), 10.0, D2D1_COLOR_F { a: 0.22, ..color }, a);
+        for (i, (name, time, passed)) in v.times.iter().enumerate() {
+            let x = l + w * i as f32;
+            let (name_color, time_color) = if i == v.next {
+                (p.text, p.text)
+            } else if *passed {
+                (p.dim, p.muted)
+            } else {
+                (p.muted, p.soft)
+            };
+            self.text(name, &self.fonts.tiny, rect(x, 105.0, x + w, 117.0), name_color, a);
+            self.text(time, &self.fonts.label_center, rect(x, 118.0, x + w, 134.0), time_color, a);
+        }
+    }
+
+    /// Daftar tugas: centang yang tergambar, baris yang meluncur ke tempat barunya, cincin
+    /// kemajuan hari ini, dan kotak tambah tugas.
     fn tasks_page(&self, s: &Scene, x0: f32, x1: f32, a: f32) {
         let p = &self.pal;
         let (l, r) = (x0 + MARGIN, x1 - MARGIN);
         let tasks = s.tasks;
+        let fx = s.task_fx;
+        let age = entering(s, Page::Tasks);
         let remaining = tasks.remaining();
         let right = if tasks.items.is_empty() {
             String::new()
@@ -1216,38 +1370,80 @@ impl Renderer {
             format!("{remaining} tersisa")
         };
         self.header(s, Some(ICON_TASKS), "Tugas", &right, None, x0, x1, a);
+        if !tasks.items.is_empty() {
+            self.progress_ring(r, HEADER_Y, &right, checklist::progress(tasks, fx, age), a);
+            self.shine(r, HEADER_Y, &right, fx, a);
+        }
 
         self.hit(rect(l - 6.0, 34.0, r + 6.0, 108.0), Hit::TaskList);
         let order = tasks.order();
         if order.is_empty() {
-            self.text("Belum ada tugas. Tambahkan di bawah.", &self.fonts.caption_center, rect(l, 62.0, r, 80.0), p.muted, a);
+            let shown = a * checklist::settled(fx);
+            self.text("Belum ada tugas. Tambahkan di bawah.", &self.fonts.caption_center, rect(l, 62.0, r, 80.0), p.muted, shown);
         }
-        for (row, &index) in order.iter().skip(tasks.scroll).take(TASKS_VISIBLE).enumerate() {
+        // Selama ada yang meluncur, baris yang lewat di luar daftar dipotong.
+        if fx.is_some() {
+            self.push_clip(rect(l - 8.0, 33.0, r + 8.0, 110.0));
+        }
+        // Tugas yang baru dicentang meluncur di atas baris lain seperti kartu yang diangkat, jadi
+        // digambar paling akhir.
+        let lifted = checklist::lifted(fx);
+        let draw_row = |pos: usize, index: usize, card: f32| {
             let task = &tasks.items[index];
-            let y = 46.0 + row as f32 * 24.0;
-            let hovered = matches!(s.hovered, Some(Hit::TaskToggle(i) | Hit::TaskRemove(i)) if i == index);
-            if hovered {
-                self.rounded(rect(l - 6.0, y - 11.0, r + 6.0, y + 11.0), 8.0, self.tint(0.06), a);
+            let row = pos as f32 - tasks.scroll as f32;
+            let visible = (tasks.scroll..tasks.scroll + TASKS_VISIBLE).contains(&pos);
+            let y = checklist::slide(index, pos, pos + 1 == order.len(), tasks.scroll, fx);
+            if !visible && fx.is_none() || !(20.0..125.0).contains(&y) {
+                return;
             }
-            let cx = l + 9.0;
-            if task.done {
-                self.circle(cx, y, 8.0, p.accent, a);
-                self.glyph(ICON_CHECK, &self.fonts.icon_9, cx, y, WHITE, a);
-            } else {
-                self.circle_outline(cx, y, 7.0, 1.5, if hovered { p.text } else { p.muted }, a);
+            let (shown, dy) = checklist::arrive(index, row, fx, age);
+            let hovered = visible && matches!(s.hovered, Some(Hit::TaskToggle(i) | Hit::TaskRemove(i)) if i == index);
+            let y = y + dy;
+            let band = rect(l - 6.0, y - 11.0, r + 6.0, y + 11.0);
+            if card > 0.0 {
+                self.rounded(band, 8.0, p.body, a * card);
+                self.rounded(band, 8.0, self.tint(0.08), a * card);
+            } else if hovered {
+                self.rounded(band, 8.0, self.tint(0.06), a * shown);
             }
-            let area = rect(l + 26.0, y - 10.0, r - 26.0, y + 10.0);
-            if task.done {
-                self.text_struck(&task.text, &self.fonts.body, area, p.muted, a);
-            } else {
-                self.text(&task.text, &self.fonts.body, area, p.text, a);
-            }
-            self.hit(rect(l - 6.0, y - 11.0, r - 20.0, y + 11.0), Hit::TaskToggle(index));
+            let mark = checklist::mark(index, task.done, row, fx, age);
+            self.task_row(l, r, y, &task.text, mark, hovered, a * shown);
             if hovered {
                 let over = s.hovered == Some(Hit::TaskRemove(index));
                 self.glyph(ICON_CLOSE, &self.fonts.icon_9, r - 8.0, y, if over { RED } else { p.muted }, a);
-                self.hit(rect(r - 20.0, y - 11.0, r + 6.0, y + 11.0), Hit::TaskRemove(index));
             }
+            // Area klik selalu di tempat akhirnya, walau barisnya masih meluncur.
+            if visible {
+                let settled = checklist::row_y(row);
+                self.hit(rect(l - 6.0, settled - 11.0, r - 20.0, settled + 11.0), Hit::TaskToggle(index));
+                if hovered {
+                    self.hit(rect(r - 20.0, settled - 11.0, r + 6.0, settled + 11.0), Hit::TaskRemove(index));
+                }
+            }
+        };
+        for (pos, &index) in order.iter().enumerate() {
+            if lifted.is_none_or(|(i, _)| i != index) {
+                draw_row(pos, index, 0.0);
+            }
+        }
+        for (text, done, y, dx, shown) in checklist::gone(fx) {
+            if shown > 0.0 {
+                self.task_row(l + dx, r + dx, y, text, checklist::Mark::flat(done), false, a * shown);
+            }
+        }
+        if let Some((index, card)) = lifted
+            && let Some(pos) = order.iter().position(|&i| i == index)
+        {
+            draw_row(pos, index, card);
+        }
+        if fx.is_some() {
+            self.pop_clip();
+        }
+        // Konfeti dari tempat centangnya diklik, di atas daftar.
+        if let Some((TaskFx { change: TaskChange::Check { index, .. }, rows, scroll, .. }, _)) = fx
+            && let Some(Some(row)) = rows.get(*index)
+        {
+            self.confetti(l + 9.0, checklist::row_y(*row as f32 - *scroll as f32), fx, a);
         }
         // Penanda masih ada tugas di atas/bawah; digulir dengan roda mouse.
         if tasks.scroll > 0 {
@@ -1282,7 +1478,14 @@ impl Renderer {
     fn system_page(&self, s: &Scene, x0: f32, x1: f32, a: f32) {
         let p = &self.pal;
         let (l, r) = (x0 + MARGIN, x1 - MARGIN);
-        self.header(s, Some(ICON_SYSTEM), "Sistem", &format!("Menyala {}", s.uptime), None, x0, x1, a);
+        // Data baru tiap detik: titik di kepala berdetak, cincin menghitung naik saat data pertama
+        // tiba, dan memindai selagi menunggunya.
+        let age = entering(s, Page::System);
+        let uptime = format!("Menyala {}", s.uptime);
+        self.header(s, Some(ICON_SYSTEM), "Sistem", &uptime, None, x0, x1, a);
+        if s.system.is_some() {
+            self.beat(r, HEADER_Y, &uptime, s.trend.beat, a);
+        }
 
         let percent = |used: u64, total: u64| if total > 0 { used as f32 / total as f32 * 100.0 } else { 0.0 };
         // Suhu GPU di bawah namanya; oranye mulai 78 °C, merah mulai 87 °C.
@@ -1303,9 +1506,19 @@ impl Renderer {
         let spacing = (r - l) / 4.0;
         for (i, (name, value, (detail, detail_color))) in meters.iter().enumerate() {
             let cx = l + spacing * (i as f32 + 0.5);
-            let color = value.map_or(p.dim, |v| load_color(v, p.accent));
-            self.ring(cx, 64.0, 20.0, 4.0, value.unwrap_or(0.0) / 100.0, color, a);
-            let label = value.map_or("–".to_string(), |v| format!("{}%", v.round()));
+            let shown = value.map(|v| v * gauge::count_up(i, age));
+            let color = shown.map_or(p.dim, |v| load_color(v, p.accent));
+            self.ring(cx, 64.0, 20.0, 4.0, shown.unwrap_or(0.0) / 100.0, color, a);
+            if value.is_none()
+                && let Some(t) = s.trend.scan
+            {
+                self.scan(i, cx, 64.0, 20.0, 4.0, t, a);
+            }
+            // Riwayat CPU di tempat keterangan yang kosong.
+            if i == 0 {
+                self.sparkline(cx, &s.trend.cpu, color, a);
+            }
+            let label = shown.map_or("–".to_string(), |v| format!("{}%", v.round()));
             self.text(&label, &self.fonts.label_center, rect(cx - 20.0, 54.0, cx + 20.0, 74.0), p.text, a);
             self.text(name, &self.fonts.caption_center, rect(cx - spacing / 2.0, 90.0, cx + spacing / 2.0, 104.0), p.soft, a);
             self.text(detail, &self.fonts.tiny, rect(cx - spacing / 2.0, 104.0, cx + spacing / 2.0, 116.0), *detail_color, a);
@@ -1324,6 +1537,24 @@ impl Renderer {
         let width = self.text_width(&text, &self.fonts.caption_end).min(r - l - 190.0);
         self.glyph(icon, &self.fonts.icon_11, r - width - 10.0, ROW_Y, color, a);
     }
+}
+
+/// Satu baris slider di halaman Kontrol.
+struct SliderRow<'a> {
+    y: f32,
+    icon: char,
+    /// Ikon bisa diklik (bisu speaker).
+    icon_hit: Option<Hit>,
+    /// Skala dan putaran ikon.
+    icon_look: (f32, f32),
+    hit: Hit,
+    /// Isi bilah yang tampil (0..1); `None` = tidak tersedia.
+    fill: Option<f32>,
+    color: D2D1_COLOR_F,
+    label: &'a str,
+    roll: Option<&'a Roll>,
+    /// Kejelasan angkanya (muncul pelan saat halaman dibuka).
+    label_alpha: f32,
 }
 
 /// Ikon speaker sesuai tingkat volume.

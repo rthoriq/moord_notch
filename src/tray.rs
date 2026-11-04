@@ -52,6 +52,11 @@ pub enum Command {
     ToggleCalendar,
     /// Pil tetap utuh saat jendela di-maximize.
     ToggleKeepPill,
+    TogglePrayerReminder,
+    TogglePrayerCountdown,
+    /// Geser koreksi menit waktu sholat ke-n (Subuh, Dzuhur, Ashar, Maghrib, Isya) sebanyak
+    /// -1 atau +1.
+    PrayerOffset(usize, i8),
     /// Siapkan identitas paket supaya pesan masuk bisa dibaca (lihat `identity`).
     ActivateMessages,
     OpenLogs,

@@ -65,6 +65,7 @@ use windows_numerics::Vector2;
 use crate::settings::{Messages, Size, Theme};
 use crate::tray::{Command, MenuState};
 use crate::widgets::Page;
+use crate::widgets::prayer::Time;
 
 const CLASS: PCWSTR = w!("NotchWindows.Pengaturan");
 /// ID aplikasi jendela ini di taskbar (lihat `set_taskbar_id`).
@@ -91,6 +92,7 @@ pub enum Category {
     Look,
     Pages,
     Notices,
+    Prayer,
     Messages,
     Privacy,
     Shortcuts,
@@ -98,11 +100,12 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 8] = [
+    pub const ALL: [Category; 9] = [
         Category::General,
         Category::Look,
         Category::Pages,
         Category::Notices,
+        Category::Prayer,
         Category::Messages,
         Category::Privacy,
         Category::Shortcuts,
@@ -115,6 +118,7 @@ impl Category {
             Category::Look => "Tampilan",
             Category::Pages => "Halaman",
             Category::Notices => "Kabar",
+            Category::Prayer => "Sholat",
             Category::Messages => "Pesan masuk",
             Category::Privacy => "Privasi & internet",
             Category::Shortcuts => "Pintasan",
@@ -128,6 +132,7 @@ impl Category {
             Category::Look => '\u{E790}',
             Category::Pages => '\u{E8FD}',
             Category::Notices => '\u{EA8F}',
+            Category::Prayer => '\u{E708}',
             Category::Messages => '\u{E8BD}',
             Category::Privacy => '\u{E72E}',
             Category::Shortcuts => '\u{E765}',
@@ -150,6 +155,8 @@ enum Row {
     Toggle { icon: char, title: String, detail: String, on: bool, enabled: bool, command: Command },
     /// Tombol di sebelah kanan.
     Button { icon: char, title: &'static str, detail: String, label: &'static str, accent: bool, action: Action },
+    /// Angka dengan tombol kurangi dan tambah.
+    Stepper { icon: char, title: &'static str, value: String, minus: Command, plus: Command },
     /// Pilihan berderet (salah satu).
     Choice { icon: char, title: &'static str, detail: &'static str, options: Vec<(&'static str, bool, bool, Command)> },
     /// Kartu-kartu tema dengan contoh notch.
@@ -173,6 +180,7 @@ fn page_icon(page: Page) -> Option<char> {
         Page::Water => None,
         Page::Tasks => Some('\u{E9D5}'),
         Page::System => Some('\u{E9D9}'),
+        Page::Prayer => Some('\u{E708}'),
     }
 }
 
@@ -255,6 +263,38 @@ fn rows(category: Category, s: &MenuState) -> Vec<Row> {
                     command: Command::ToggleCallApp(i),
                 }));
             }
+            rows
+        }
+        Category::Prayer => {
+            let city = s.city.clone().unwrap_or_else(|| "Belum dipilih".into());
+            let mut rows = vec![
+                Row::Note(
+                    "Jadwal dihitung di laptop ini dari koordinat kota cuaca dengan kriteria Kemenag RI: Subuh 20°, Isya 18°, ihtiyat 2 menit. Internet hanya dipakai sekali, saat mencari kota lewat Open-Meteo.".into(),
+                    false,
+                ),
+                Row::Button {
+                    icon: '\u{E707}',
+                    title: "Kota",
+                    detail: city,
+                    label: "Ganti kota",
+                    accent: false,
+                    action: Action::Run(Command::EditCity),
+                },
+                toggle('\u{EA8F}', "Pengingat waktu sholat", "Kabar dan bunyi saat masuk Subuh, Dzuhur, Ashar, Maghrib, dan Isya", settings.prayer_reminder, Command::TogglePrayerReminder),
+                toggle('\u{E916}', "Hitung mundur di pil", "Sisa menit tampil di pil mulai 10 menit sebelum waktu sholat", settings.prayer_countdown, Command::TogglePrayerCountdown),
+                Row::Note("Koreksi menit, misal supaya sama dengan jadwal masjid terdekat.".into(), false),
+            ];
+            rows.extend(Time::PRAYERS.iter().zip(settings.prayer_offsets).enumerate().map(|(i, (time, offset))| Row::Stepper {
+                icon: '\u{E823}',
+                title: time.label(),
+                value: match offset {
+                    0 => "Tepat".to_string(),
+                    m if m > 0 => format!("+{m} menit"),
+                    m => format!("−{} menit", -m),
+                },
+                minus: Command::PrayerOffset(i, -1),
+                plus: Command::PrayerOffset(i, 1),
+            }));
             rows
         }
         Category::Messages => {
@@ -724,6 +764,16 @@ impl Sheet<'_> {
                 let room = self.kind.width(label, Font::Text, 14.0, DWRITE_FONT_WEIGHT_NORMAL) + 72.0;
                 let (_, bottom) = self.card(Some(*icon), title, detail, left, right, top, room, 0.0, true, false);
                 self.button(label, *accent, *action, right - 20.0, (top + bottom) / 2.0);
+                bottom
+            }
+            Row::Stepper { icon, title, value, minus, plus } => {
+                let (_, bottom) = self.card(Some(*icon), title, "", left, right, top, 220.0, 0.0, true, false);
+                let y = (top + bottom) / 2.0;
+                let plus_w = self.kind.width("+", Font::Text, 14.0, DWRITE_FONT_WEIGHT_NORMAL) + 40.0;
+                let value_right = right - 20.0 - plus_w - 6.0;
+                self.button("+", false, Action::Run(*plus), right - 20.0, y);
+                self.text(value, Font::Text, 14.0, DWRITE_FONT_WEIGHT_NORMAL, rect(value_right - 76.0, top, value_right, bottom), 0, (c.text, 1.0));
+                self.button("−", false, Action::Run(*minus), value_right - 82.0, y);
                 bottom
             }
             Row::Choice { icon, title, detail, options } => {
